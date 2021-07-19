@@ -64,6 +64,8 @@ allowed_expr+="|^ehcache-multi.xsd$"
 allowed_expr+="|^.gitkeep$"
 allowed_expr+="|^OSGI-INF.*$"
 allowed_expr+="|^javax.*$"
+#   * HubSpot build cruft
+allowed_expr+="|^build_info"
 
 allowed_expr+=")"
 declare -i bad_artifacts=0
