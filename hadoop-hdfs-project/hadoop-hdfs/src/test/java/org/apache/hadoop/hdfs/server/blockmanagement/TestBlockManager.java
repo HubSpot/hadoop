@@ -553,7 +553,7 @@ public class TestBlockManager {
       DatanodeStorageInfo[] pipeline) throws IOException {
     for (int i = 1; i < pipeline.length; i++) {
       DatanodeStorageInfo storage = pipeline[i];
-      bm.addBlock(storage, blockInfo, null);
+      bm.addBlock(storage, blockInfo, null, 0);
       blockInfo.addStorage(storage, blockInfo);
     }
   }

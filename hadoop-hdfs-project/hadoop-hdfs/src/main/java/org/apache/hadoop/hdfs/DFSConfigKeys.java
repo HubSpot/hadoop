@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hdfs;
 
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
@@ -31,8 +32,6 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskReplicaLruTr
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.ReservedSpaceCalculator;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 import org.apache.hadoop.http.HttpConfig;
-
-import java.util.concurrent.TimeUnit;
 
 /** 
  * This class contains constants for configuration keys and default values
@@ -522,6 +521,10 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.block.deletion.unlock.interval.ms";
   public static final int DFS_NAMENODE_BLOCK_DELETION_UNLOCK_INTERVAL_MS_DEFAULT =
       10;
+
+  /** Grace period for replaced blocks, before being sent to DataNodes for invalidation */
+  public static final String DFS_NAMENODE_BLOCK_REPLACE_GRACE_PERIOD_MS_KEY = "dfs.namenode.block.replace.grace.period.ms";
+  public static final long DFS_NAMENODE_BLOCK_REPLACE_GRACE_PERIOD_MS_DEFAULT = 0;
 
   public static final String DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES =
       HdfsClientConfigKeys.DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES;

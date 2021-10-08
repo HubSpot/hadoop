@@ -17,9 +17,18 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_BLOCKPLACEMENTPOLICY_MIN_BLOCKS_FOR_WRITE_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CORRUPT_BLOCK_DELETE_IMMEDIATELY_ENABLED;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CORRUPT_BLOCK_DELETE_IMMEDIATELY_ENABLED_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_CHECK_LIMIT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_CHECK_LIMIT_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_SEC_DEAFULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_SEC_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SEND_QOP_ENABLED;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SEND_QOP_ENABLED_DEFAULT;
 import static org.apache.hadoop.hdfs.protocol.BlockType.CONTIGUOUS;
 import static org.apache.hadoop.hdfs.protocol.BlockType.STRIPED;
+import static org.apache.hadoop.hdfs.util.StripedBlockUtil.getInternalBlockLength;
 import static org.apache.hadoop.util.ExitUtil.terminate;
 import static org.apache.hadoop.util.Time.now;
 
@@ -44,33 +53,33 @@ import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ConcurrentLinkedQueue;
-
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import javax.management.ObjectName;
-
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.hdfs.DFSUtilClient;
-import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
+import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HAUtil;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs.BlockReportReplica;
+import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.StoragePolicySatisfierMode;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
@@ -78,19 +87,20 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.protocol.UnregisteredNodeException;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
-import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier.AccessMode;
+import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
 import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
 import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped.StorageAndBlockIndex;
 import org.apache.hadoop.hdfs.server.blockmanagement.CorruptReplicasMap.Reason;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo.AddBlockResult;
+import org.apache.hadoop.hdfs.server.blockmanagement.ExcessRedundancyMap.ExcessBlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.NumberReplicas.StoredReplicaState;
 import org.apache.hadoop.hdfs.server.blockmanagement.PendingDataNodeMessages.ReportedBlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.PendingReconstructionBlocks.PendingBlockInfo;
-import org.apache.hadoop.hdfs.server.blockmanagement.ExcessRedundancyMap.ExcessBlockInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
+import org.apache.hadoop.hdfs.server.namenode.CacheManager;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
@@ -114,11 +124,6 @@ import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
-import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
-import org.apache.hadoop.hdfs.server.namenode.CacheManager;
-
-import static org.apache.hadoop.hdfs.util.StripedBlockUtil.getInternalBlockLength;
-
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
 import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.Node;
@@ -127,12 +132,9 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.LightWeightGSet;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
-
-import org.apache.hadoop.classification.VisibleForTesting;
-import org.apache.hadoop.util.Preconditions;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -203,6 +205,7 @@ public class BlockManager implements BlockStatsMXBean {
   private boolean initializedReplQueues;
 
   private final long startupDelayBlockDeletionInMs;
+  private final long blockReplaceGracePeriodInMs;
   private final BlockReportLeaseManager blockReportLeaseManager;
   private ObjectName mxBeanName;
 
@@ -516,7 +519,10 @@ public class BlockManager implements BlockStatsMXBean {
     this.deleteBlockUnlockIntervalTimeMs = conf.getLong(
         DFSConfigKeys.DFS_NAMENODE_BLOCK_DELETION_UNLOCK_INTERVAL_MS,
         DFSConfigKeys.DFS_NAMENODE_BLOCK_DELETION_UNLOCK_INTERVAL_MS_DEFAULT);
-    this.invalidateBlocks = new InvalidateBlocks(
+    blockReplaceGracePeriodInMs = conf.getLong(
+        DFSConfigKeys.DFS_NAMENODE_BLOCK_REPLACE_GRACE_PERIOD_MS_KEY,
+        DFSConfigKeys.DFS_NAMENODE_BLOCK_REPLACE_GRACE_PERIOD_MS_DEFAULT);
+    invalidateBlocks = new InvalidateBlocks(
         datanodeManager.getBlockInvalidateLimit(),
         startupDelayBlockDeletionInMs,
         blockIdManager);
@@ -1878,11 +1884,11 @@ public class BlockManager implements BlockStatsMXBean {
    * Adds block to list of blocks which will be invalidated on specified
    * datanode and log the operation
    */
-  void addToInvalidates(final Block block, final DatanodeInfo datanode) {
+  void addToInvalidates(final Block block, final DatanodeInfo datanode, final long gracePeriodMs) {
     if (!isPopulatingReplQueues()) {
       return;
     }
-    invalidateBlocks.add(block, datanode, true);
+    invalidateBlocks.addWithGracePeriod(block, datanode, gracePeriodMs,true);
   }
 
   /**
@@ -1979,7 +1985,7 @@ public class BlockManager implements BlockStatsMXBean {
         blockLog.debug("BLOCK markBlockAsCorrupt: {} cannot be marked as" +
             " corrupt as it does not belong to any file", b);
       }
-      addToInvalidates(b.getCorrupted(), node);
+      addToInvalidates(b.getCorrupted(), node, 0);
       return;
     }
     short expectedRedundancies =
@@ -2070,7 +2076,7 @@ public class BlockManager implements BlockStatsMXBean {
     } else {
       // we already checked the number of replicas in the caller of this
       // function and know there are enough live replicas, so we can delete it.
-      addToInvalidates(b.getCorrupted(), dn);
+      addToInvalidates(b.getCorrupted(), dn, 0);
       removeStoredBlock(b.getStored(), node);
       blockLog.debug("BLOCK* invalidateBlocks: {} on {} listed for deletion.", b, dn);
       return true;
@@ -3174,7 +3180,7 @@ public class BlockManager implements BlockStatsMXBean {
                 datanodeStorageInfo.getState().equals(State.NORMAL)) {
               final Block b = getBlockOnStorage(blockInfo, datanodeStorageInfo);
               if (!containsInvalidateBlock(datanodeDescriptor, b)) {
-                addToInvalidates(b, datanodeDescriptor);
+                addToInvalidates(b, datanodeDescriptor, 0);
                 LOG.debug("Excess block timeout ({}, {}) is added to invalidated.",
                     b, datanodeDescriptor);
               }
@@ -3224,7 +3230,7 @@ public class BlockManager implements BlockStatsMXBean {
           "reported.", maxNumBlocksToLog, numBlocksLogged);
     }
     for (Block b : toInvalidate) {
-      addToInvalidates(b, node);
+      addToInvalidates(b, node, 0);
     }
     for (BlockToMarkCorrupt b : toCorrupt) {
       markBlockAsCorrupt(b, storageInfo, node);
@@ -3779,7 +3785,7 @@ public class BlockManager implements BlockStatsMXBean {
   private Block addStoredBlock(final BlockInfo block,
                                final Block reportedBlock,
                                DatanodeStorageInfo storageInfo,
-                               DatanodeDescriptor delNodeHint,
+                               ReplicaDeleteHint delNodeHint,
                                boolean logEveryBlock)
   throws IOException {
     assert block != null && namesystem.hasWriteLock();
@@ -4214,7 +4220,7 @@ public class BlockManager implements BlockStatsMXBean {
    */
   private void processExtraRedundancyBlock(final BlockInfo block,
       final short replication, final DatanodeDescriptor addedNode,
-      DatanodeDescriptor delNodeHint) {
+      ReplicaDeleteHint delNodeHint) {
     if (!processExtraRedundancyBlockWithoutPostpone(block, replication,
         addedNode, delNodeHint)) {
       postponeBlock(block);
@@ -4229,11 +4235,14 @@ public class BlockManager implements BlockStatsMXBean {
    */
   private boolean processExtraRedundancyBlockWithoutPostpone(final BlockInfo block,
       final short replication, final DatanodeDescriptor addedNode,
-      DatanodeDescriptor delNodeHint) {
+      ReplicaDeleteHint delNodeHint) {
     assert namesystem.hasWriteLock();
-    if (addedNode == delNodeHint) {
-      delNodeHint = null;
+    if (delNodeHint == null) {
+      delNodeHint = ReplicaDeleteHint.NONE;
+    } else if (addedNode == delNodeHint.getDatanode()) {
+      delNodeHint = delNodeHint.withNullDataNode();
     }
+
     Collection<DatanodeStorageInfo> nonExcess = new ArrayList<>();
     Collection<DatanodeDescriptor> corruptNodes = corruptReplicas
         .getNodes(block);
@@ -4273,7 +4282,7 @@ public class BlockManager implements BlockStatsMXBean {
       final Collection<DatanodeStorageInfo> nonExcess,
       BlockInfo storedBlock, short replication,
       DatanodeDescriptor addedNode,
-      DatanodeDescriptor delNodeHint) {
+      ReplicaDeleteHint delNodeHint) {
     assert namesystem.hasWriteLock();
     // first form a rack to datanodes map and
     BlockCollection bc = getBlockCollection(storedBlock);
@@ -4308,13 +4317,14 @@ public class BlockManager implements BlockStatsMXBean {
   private void chooseExcessRedundancyContiguous(
       final Collection<DatanodeStorageInfo> nonExcess, BlockInfo storedBlock,
       short replication, DatanodeDescriptor addedNode,
-      DatanodeDescriptor delNodeHint, List<StorageType> excessTypes) {
+      ReplicaDeleteHint delNodeHint, List<StorageType> excessTypes) {
+
     BlockPlacementPolicy replicator = placementPolicies.getPolicy(CONTIGUOUS);
     List<DatanodeStorageInfo> replicasToDelete = replicator
         .chooseReplicasToDelete(nonExcess, nonExcess, replication, excessTypes,
-            addedNode, delNodeHint);
+            addedNode, delNodeHint.getDatanode());
     for (DatanodeStorageInfo chosenReplica : replicasToDelete) {
-      processChosenExcessRedundancy(nonExcess, chosenReplica, storedBlock);
+      processChosenExcessRedundancy(nonExcess, chosenReplica, delNodeHint.getGracePeriod(), storedBlock);
     }
   }
 
@@ -4330,7 +4340,7 @@ public class BlockManager implements BlockStatsMXBean {
   private void chooseExcessRedundancyStriped(BlockCollection bc,
       final Collection<DatanodeStorageInfo> nonExcess,
       BlockInfo storedBlock,
-      DatanodeDescriptor delNodeHint) {
+      ReplicaDeleteHint delNodeHint) {
     assert storedBlock instanceof BlockInfoStriped;
     BlockInfoStriped sblk = (BlockInfoStriped) storedBlock;
     short groupSize = sblk.getTotalBlockNum();
@@ -4356,13 +4366,13 @@ public class BlockManager implements BlockStatsMXBean {
       return;
     }
 
-    // use delHint only if delHint is duplicated
+    // use delNodeHint only if delNodeHint is duplicated
     final DatanodeStorageInfo delStorageHint =
-        DatanodeStorageInfo.getDatanodeStorageInfo(nonExcess, delNodeHint);
+        DatanodeStorageInfo.getDatanodeStorageInfo(nonExcess, delNodeHint.getDatanode());
     if (delStorageHint != null) {
       Integer index = storage2index.get(delStorageHint);
       if (index != null && duplicated.get(index)) {
-        processChosenExcessRedundancy(nonExcess, delStorageHint, storedBlock);
+        processChosenExcessRedundancy(nonExcess, delStorageHint, delNodeHint.getGracePeriod(), storedBlock);
         logEmptyExcessType = false;
       }
     }
@@ -4405,7 +4415,7 @@ public class BlockManager implements BlockStatsMXBean {
         Preconditions.checkArgument(candidates.containsAll(replicasToDelete),
             "The EC replicas to be deleted are not in the candidate list");
         for (DatanodeStorageInfo chosen : replicasToDelete) {
-          processChosenExcessRedundancy(nonExcess, chosen, storedBlock);
+          processChosenExcessRedundancy(nonExcess, chosen, delNodeHint.getGracePeriod(), storedBlock);
           candidates.remove(chosen);
         }
       }
@@ -4415,7 +4425,8 @@ public class BlockManager implements BlockStatsMXBean {
 
   private void processChosenExcessRedundancy(
       final Collection<DatanodeStorageInfo> nonExcess,
-      final DatanodeStorageInfo chosen, BlockInfo storedBlock) {
+      final DatanodeStorageInfo chosen,
+      long gracePeriodMs, BlockInfo storedBlock) {
     nonExcess.remove(chosen);
     excessRedundancyMap.add(chosen.getDatanodeDescriptor(), storedBlock);
     //
@@ -4428,7 +4439,7 @@ public class BlockManager implements BlockStatsMXBean {
     // upon giving instructions to the datanodes.
     //
     final Block blockToInvalidate = getBlockOnStorage(storedBlock, chosen);
-    addToInvalidates(blockToInvalidate, chosen.getDatanodeDescriptor());
+    addToInvalidates(blockToInvalidate, chosen.getDatanodeDescriptor(), gracePeriodMs);
     blockLog.debug("BLOCK* chooseExcessRedundancies: ({}, {}) is added to invalidated blocks set",
         chosen, storedBlock);
   }
@@ -4542,7 +4553,7 @@ public class BlockManager implements BlockStatsMXBean {
    */
   @VisibleForTesting
   public void addBlock(DatanodeStorageInfo storageInfo, Block block,
-      String delHint) throws IOException {
+      String delHint, long delGracePeriod) throws IOException {
     DatanodeDescriptor node = storageInfo.getDatanodeDescriptor();
     // Decrement number of blocks scheduled to this datanode.
     // for a retry request (of DatanodeProtocol#blockReceivedAndDeleted with 
@@ -4550,12 +4561,14 @@ public class BlockManager implements BlockStatsMXBean {
     node.decrementBlocksScheduled(storageInfo.getStorageType());
 
     // get the deletion hint node
-    DatanodeDescriptor delHintNode = null;
+    ReplicaDeleteHint delHintNode = null;
     if (delHint != null && delHint.length() != 0) {
-      delHintNode = datanodeManager.getDatanode(delHint);
-      if (delHintNode == null) {
+      DatanodeDescriptor datanode = datanodeManager.getDatanode(delHint);
+      if (datanode == null) {
         blockLog.warn("BLOCK* blockReceived: {} is expected to be removed " +
             "from an unrecorded node {}", block, delHint);
+      } else {
+        delHintNode = new ReplicaDeleteHint(datanode, delGracePeriod);
       }
     }
 
@@ -4581,7 +4594,7 @@ public class BlockManager implements BlockStatsMXBean {
    */
   private boolean processAndHandleReportedBlock(
       DatanodeStorageInfo storageInfo, Block block,
-      ReplicaState reportedState, DatanodeDescriptor delHintNode)
+      ReplicaState reportedState, ReplicaDeleteHint delHintNode)
       throws IOException {
     // blockReceived reports a finalized block
     Collection<BlockInfoToAdd> toAdd = new LinkedList<>();
@@ -4625,7 +4638,7 @@ public class BlockManager implements BlockStatsMXBean {
     for (Block b : toInvalidate) {
       blockLog.debug("BLOCK* addBlock: block {} on node {} size {} does not belong to any file",
           b, node, b.getNumBytes());
-      addToInvalidates(b, node);
+      addToInvalidates(b, node, 0);
     }
     for (BlockToMarkCorrupt b : toCorrupt) {
       markBlockAsCorrupt(b, storageInfo, node);
@@ -4686,7 +4699,7 @@ public class BlockManager implements BlockStatsMXBean {
         deleted++;
         break;
       case RECEIVED_BLOCK:
-        addBlock(storageInfo, rdbi.getBlock(), rdbi.getDelHints());
+        addBlock(storageInfo, rdbi.getBlock(), rdbi.getDelHints(), blockReplaceGracePeriodInMs);
         received++;
         break;
       case RECEIVING_BLOCK:
