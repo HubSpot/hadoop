@@ -24,8 +24,16 @@ MAVEN_OPTS+="-Drequire.zstd -Dbundle.zstd -Dzstd.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.snappy -Dbundle.snappy=true -Dsnappy.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.openssl "
 
+# The Yarn UI and the yarn applications catalog both require a version of node.js which does not work with centos6
+# I've removed -Pyarn-ui, and added the below -pl exclusion in order to get around this incompatibility.
+# If we end up needing yarn-ui as part of a yarn upgrade, we'll need to investigate building this for centos8 or some
+# other more tactical workaround like pinning the node.js to an older version. I tried that with -Dnodejs.version, but that
+# failed for other dependencies that expected a particular node version, etc. So a deeper investigation will be necessary.
+
 # Build artifacts
-mvn $ANT_OPTS $BUNDLE_SNAPPY -Pdist -Pnative -Pyarn-ui -Dtar ${MAVEN_OPTS} clean package ${EXTRA_GOALS} "$@"
+mvn $ANT_OPTS $BUNDLE_SNAPPY \
+    -pl '!hadoop-yarn-project/hadoop-yarn/hadoop-yarn-applications/hadoop-yarn-applications-catalog/hadoop-yarn-applications-catalog-webapp' \
+    -Pdist -Pnative -Dtar ${MAVEN_OPTS} clean package ${EXTRA_GOALS} "$@"
 
 (cd build ; tar --strip-components=1 -xzvf  ../hadoop-dist/target/hadoop-${HADOOP_VERSION}.tar.gz)
 

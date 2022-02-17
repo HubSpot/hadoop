@@ -7,9 +7,11 @@ if [[ "X$HADOOP_VERSION" = "X" ]]; then
     exit 1
 fi
 
-if [[ "X$MAVEN_DIR" != "X" ]]; then
-    export PATH="$PATH:$MAVEN_DIR/bin"
+if [[ "X$MAVEN_DIR" = "X" ]]; then
+    MAVEN_DIR="/opt/build-deps/maven3/bin/mvn"
 fi
+
+export PATH="$PATH:$MAVEN_DIR/bin"
 
 RPM_DIR="$TEMP_OUTPUT_DIR"
 
