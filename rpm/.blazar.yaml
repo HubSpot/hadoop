@@ -6,6 +6,9 @@ buildpack:
   repository: rpm_builders
   branch: master
 
+provides:
+  - name: hadoop-rpm
+
 depends:
   - name: apache-hadoop-build-container
 
