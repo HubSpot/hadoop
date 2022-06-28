@@ -40,7 +40,7 @@ rpmbuild \
     --define "_topdir $SCRATCH_DIR" \
     --define "input_tar $TAR_NAME" \
     --define "hadoop_version ${HADOOP_VERSION}" \
-    --define "release ${PKG_RELEASE}%{?dist}" \
+    --define "release ${PKG_RELEASE}" \
     -bs --nodeps --buildroot="${SCRATCH_DIR}/INSTALL" \
     ${SCRATCH_DIR}/SPECS/hadoop.spec
 
@@ -52,7 +52,7 @@ rpmbuild \
     --define "_topdir $SCRATCH_DIR" \
     --define "input_tar $TAR_NAME" \
     --define "hadoop_version ${HADOOP_VERSION}" \
-    --define "release ${PKG_RELEASE}%{?dist}" \
+    --define "release ${PKG_RELEASE}" \
     --rebuild $src_rpm
 
 if [[ -d $RPMS_OUTPUT_DIR ]]; then
