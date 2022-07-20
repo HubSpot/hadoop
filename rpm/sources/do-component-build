@@ -19,7 +19,7 @@ set -ex
 mkdir -p build
  
 # Build artifacts
-MAVEN_OPTS+="-DskipTests -DskipTest -DskipITs "
+MAVEN_OPTS+="-DskipTests -DskipTest -DskipITs -Dmaven.javadoc.skip=true "
 MAVEN_OPTS+="-Drequire.zstd -Dbundle.zstd -Dzstd.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.snappy -Dbundle.snappy=true -Dsnappy.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.openssl "
