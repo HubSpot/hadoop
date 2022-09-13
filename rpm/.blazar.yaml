@@ -30,10 +30,10 @@ env:
   # All others go to DEVELOP_YUM_REPO, with release hs~branch.buildNumber
   MAIN_BRANCH: "hubspot-3.3"
 
-  # Our main branch will upload to 6/hs-hadoop.
-  # All other branches (including staging) will go to 6/hs-hadoop-develop.
-  MAIN_YUM_REPO: "6_hs-hadoop"
-  DEVELOP_YUM_REPO: "6_hs-hadoop-develop"
+  # Our main branch will upload to 8/hs-hadoop.
+  # All other branches (including staging) will go to 8/hs-hadoop-develop.
+  MAIN_YUM_REPO: "8_hs-hadoop"
+  DEVELOP_YUM_REPO: "8_hs-hadoop-develop"
 
   # This will be updated automatically by the "Set yum repo and package version" step below
   YUM_REPO_UPLOAD_OVERRIDE: "UPDATE ME"
@@ -64,8 +64,8 @@ before:
     commands:
       - |
           # We want our resulting version to follow this schema:
-          # master branch: {hadoop_version}-hs.{build_number}.el6
-          # other branches: {hadoop_version}-hs~{branch_name}.{build_number}.el6, where branch_name substitutes underscore for non-alpha-numeric characters
+          # master branch: {hadoop_version}-hs.{build_number}.el8
+          # other branches: {hadoop_version}-hs~{branch_name}.{build_number}.el8, where branch_name substitutes underscore for non-alpha-numeric characters
 
           release_prefix="hs"
 

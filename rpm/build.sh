@@ -8,7 +8,7 @@ if [[ "X$HADOOP_VERSION" = "X" ]]; then
 fi
 
 if [[ "X$MAVEN_DIR" = "X" ]]; then
-    MAVEN_DIR="/opt/build-deps/maven3/bin/mvn"
+    MAVEN_DIR="/opt/build-deps/maven3"
 fi
 
 export PATH="$PATH:$MAVEN_DIR/bin"
