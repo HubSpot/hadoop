@@ -1,10 +1,7 @@
 buildType: MAVEN
 
 buildpack:
-  host: git.hubteam.com
-  organization: HubSpot
-  repository: rpm_builders
-  branch: master
+  name: Blazar-Buildpack-RPM
 
 provides:
   - name: hadoop-rpm
@@ -25,6 +22,7 @@ cache:
 env:
   MAVEN_DIR: /opt/build-deps/maven3
   JAVA_HOME: "/opt/build-deps/jdk8"
+  PLATFORMS: "amd64 arm64"
 
   # MAIN_BRANCH goes to MAIN_YUM_REPO, with release hs.buildNumber
   # All others go to DEVELOP_YUM_REPO, with release hs~branch.buildNumber
@@ -34,6 +32,8 @@ env:
   # All other branches (including staging) will go to 8/hs-hadoop-develop.
   MAIN_YUM_REPO: "8_hs-hadoop"
   DEVELOP_YUM_REPO: "8_hs-hadoop-develop"
+  DISABLE_CENTOS_6_RPMS: "true"
+  ENABLE_CENTOS_8_RPMS: "true"
 
   # This will be updated automatically by the "Set yum repo and package version" step below
   YUM_REPO_UPLOAD_OVERRIDE: "UPDATE ME"
@@ -42,6 +42,18 @@ env:
   RPM_BUILD_COMMAND: "./build_with_docker.sh"
 
 before:
+  - description: "Validate selected platforms"
+    commands:
+      - |
+        SUPPORTED_PLATFORMS=("amd64" "arm64")
+        selected_platforms=($PLATFORMS)
+        for platform in "${selected_platforms[@]}"; do
+          if [[ ! " ${SUPPORTED_PLATFORMS[*]} " =~ " ${platform} " ]]; then
+            echo "Unsupported value(s) for PLATFORMS. Supported platforms: ${SUPPORTED_PLATFORMS[*]}"
+            exit 1
+          fi
+        done
+
   - description: Detect HADOOP_VERSION
     commands:
       - |

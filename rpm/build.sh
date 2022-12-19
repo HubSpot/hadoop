@@ -57,6 +57,5 @@ rpmbuild \
 
 if [[ -d $RPMS_OUTPUT_DIR ]]; then
     # Move rpms to output dir for upload
-
     find ${SCRATCH_DIR}/{SRPMS,RPMS} -name "*.rpm" -exec mv {} $RPMS_OUTPUT_DIR/ \;
 fi
