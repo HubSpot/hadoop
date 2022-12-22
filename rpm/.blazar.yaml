@@ -12,7 +12,6 @@ depends:
 
 buildDeps:
   - hs-build-tools
-  - jdk8
   - maven3
 
 # unlike normal maven builds, we want to use our own m2 because the build process involves
@@ -22,8 +21,7 @@ cache:
 
 env:
   MAVEN_DIR: /opt/build-deps/maven3
-  JAVA_HOME: "/opt/build-deps/jdk8"
-  PLATFORMS: "amd64 arm64"
+  PLATFORMS: "arm64 amd64"
 
   # MAIN_BRANCH goes to MAIN_YUM_REPO, with release hs.buildNumber
   # All others go to DEVELOP_YUM_REPO, with release hs~branch.buildNumber
@@ -43,29 +41,15 @@ env:
   RPM_BUILD_COMMAND: "./build.sh"
   BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/arm64/apache-hadoop-build-container:latest"
   DOCKER_RUN_EXTRA_ARGS: |
-    --mount type=bind,src=$JAVA_HOME,dst=$JAVA_HOME,readonly \
     --mount type=bind,src=$MAVEN_DIR,dst=$MAVEN_DIR,readonly \
     --mount type=bind,src=/root/.m2,dst=/root/.m2
     --env PKG_RELEASE
     --env MAVEN_DIR
     --env HADOOP_VERSION
-    --env JAVA_HOME
   CONTAINER_TEMP_OUTPUT_DIR: /temporary_artifacts
   CONTAINER_RPMS_OUTPUT_DIR: /generated_rpms
 
 before:
-  - description: "Validate selected platforms"
-    commands:
-      - |
-        SUPPORTED_PLATFORMS=("amd64" "arm64")
-        selected_platforms=($PLATFORMS)
-        for platform in "${selected_platforms[@]}"; do
-          if [[ ! " ${SUPPORTED_PLATFORMS[*]} " =~ " ${platform} " ]]; then
-            echo "Unsupported value(s) for PLATFORMS. Supported platforms: ${SUPPORTED_PLATFORMS[*]}"
-            exit 1
-          fi
-        done
-
   - description: Detect HADOOP_VERSION
     commands:
       - |
