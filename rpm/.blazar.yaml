@@ -2,6 +2,7 @@ buildType: MAVEN
 
 buildpack:
   name: Blazar-Buildpack-RPM
+  branch: docker-run-extra-args
 
 provides:
   - name: hadoop-rpm
@@ -39,7 +40,18 @@ env:
   YUM_REPO_UPLOAD_OVERRIDE: "UPDATE ME"
 
   # The entry point script for the rpm build
-  RPM_BUILD_COMMAND: "./build_with_docker.sh"
+  RPM_BUILD_COMMAND: "./build.sh"
+  BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/arm64/apache-hadoop-build-container:latest"
+  DOCKER_RUN_EXTRA_ARGS: |
+    --mount type=bind,src=$JAVA_HOME,dst=$JAVA_HOME,readonly \
+    --mount type=bind,src=$MAVEN_DIR,dst=$MAVEN_DIR,readonly \
+    --mount type=bind,src=/root/.m2,dst=/root/.m2
+    --env PKG_RELEASE
+    --env MAVEN_DIR
+    --env HADOOP_VERSION
+    --env JAVA_HOME
+  CONTAINER_TEMP_OUTPUT_DIR: /temporary_artifacts
+  CONTAINER_RPMS_OUTPUT_DIR: /generated_rpms
 
 before:
   - description: "Validate selected platforms"
