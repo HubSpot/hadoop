@@ -10,27 +10,13 @@ provides:
 depends:
   - name: apache-hadoop-build-container
 
-buildDeps:
-  - hs-build-tools
-  - maven3
-
 # unlike normal maven builds, we want to use our own m2 because the build process involves
 # mvn install. we don't want these installed jars to mess up the global m2 cache.
 cache:
   - /root/.m2/repository
 
 env:
-  MAVEN_DIR: /opt/build-deps/maven3
   PLATFORMS: "arm64 amd64"
-
-  # MAIN_BRANCH goes to MAIN_YUM_REPO, with release hs.buildNumber
-  # All others go to DEVELOP_YUM_REPO, with release hs~branch.buildNumber
-  MAIN_BRANCH: "hubspot-3.3"
-
-  # Our main branch will upload to 8/hs-hadoop.
-  # All other branches (including staging) will go to 8/hs-hadoop-develop.
-  MAIN_YUM_REPO: "8_hs-hadoop"
-  DEVELOP_YUM_REPO: "8_hs-hadoop-develop"
   DISABLE_CENTOS_6_RPMS: "true"
   ENABLE_CENTOS_8_RPMS: "true"
 
@@ -40,16 +26,8 @@ env:
   # The entry point script for the rpm build
   RPM_BUILD_COMMAND: "./build.sh"
   BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/arm64/apache-hadoop-build-container:latest"
-  DOCKER_RUN_EXTRA_ARGS: |
-    --mount type=bind,src=$MAVEN_DIR,dst=$MAVEN_DIR,readonly
   CONTAINER_TEMP_OUTPUT_DIR: /temporary_artifacts
   CONTAINER_RPMS_OUTPUT_DIR: /generated_rpms
-
-before:
-  - description: debug env vars
-    commands:
-      - |
-          env
 
 buildResources:
   cpus: 8
