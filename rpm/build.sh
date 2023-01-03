@@ -2,14 +2,38 @@
 set -e
 set -x
 
-if [[ "X$HADOOP_VERSION" = "X" ]]; then
-    echo "HADOOP_VERSION not set"
+# the pom.xml has an invalid xml namespace, so just remove that so xmllint can parse it.
+env
+cat $WORKSPACE/pom.xml | sed '15 s/xmlns=".*"//g' > $TEMP_OUTPUT_DIR/pom.xml.tmp
+HADOOP_VERSION=$(echo "cat /project/version/text()" | xmllint --nocdata --shell $TEMP_OUTPUT_DIR/pom.xml.tmp | sed '1d;$d')
+rm $TEMP_OUTPUT_DIR/pom.xml.tmp
+
+# sanity check that we've got some that looks right. it wouldn't be the end of the world if we got it wrong, but
+# will help avoid confusion.
+if [[ ! "$HADOOP_VERSION" =~ 3\.[0-9]+\.[0-9]+ ]]; then
+    echo "Unexpected HADOOP_VERSION extracted from pom.xml. Got $HADOOP_VERSION but expected a string like '3.3.1', with three numbers separated by decimals, the first numbers being 3."
     exit 1
 fi
 
-if [[ "X$MAVEN_DIR" = "X" ]]; then
-    MAVEN_DIR="/opt/build-deps/maven3"
+echo "Building Hadoop version $HADOOP_VERSION"
+
+# We want our resulting version to follow this schema:
+# master branch: {hadoop_version}-hs.{build_number}.el8
+# other branches: {hadoop_version}-hs~{branch_name}.{build_number}.el8, where branch_name substitutes underscore for non-alpha-numeric characters
+release_prefix="hs"
+
+if [ "$GIT_BRANCH" = "$MAIN_BRANCH" ]; then
+    repo=$MAIN_YUM_REPO
+else
+    release_prefix="${release_prefix}~${GIT_BRANCH//[^[:alnum:]]/_}"
+    repo=$DEVELOP_YUM_REPO
 fi
+
+release="${release_prefix}.${BUILD_NUMBER}"
+export PKG_RELEASE=$release
+export YUM_REPO_UPLOAD_OVERRIDE=$repo
+
+echo "Will upload package with release $release to $repo"
 
 export PATH="$PATH:$MAVEN_DIR/bin"
 
