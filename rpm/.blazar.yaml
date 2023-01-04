@@ -2,7 +2,6 @@ buildType: MAVEN
 
 buildpack:
   name: Blazar-Buildpack-RPM
-  branch: docker-run-extra-args
 
 provides:
   - name: hadoop-rpm
@@ -25,7 +24,7 @@ env:
 
   # The entry point script for the rpm build
   RPM_BUILD_COMMAND: "./build.sh"
-  BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/arm64/apache-hadoop-build-container:latest"
+  BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/apache-hadoop-build-container:latest"
   CONTAINER_TEMP_OUTPUT_DIR: /temporary_artifacts
   CONTAINER_RPMS_OUTPUT_DIR: /generated_rpms
 
