@@ -21,19 +21,12 @@ MAIN_BRANCH="hubspot-3.3"
 # We want our resulting version to follow this schema:
 # master branch: {hadoop_version}-hs.{build_number}.el8
 # other branches: {hadoop_version}-hs~{branch_name}.{build_number}.el8, where branch_name substitutes underscore for non-alpha-numeric characters
-MAIN_YUM_REPO="8_hs-hadoop"
-DEVELOP_YUM_REPO="8_hs-hadoop-develop"
 release_prefix="hs"
-if [ "$GIT_BRANCH" = "$MAIN_BRANCH" ]; then
-    repo=$MAIN_YUM_REPO
-else
+if [ "$GIT_BRANCH" != "$MAIN_BRANCH" ]; then
     release_prefix="${release_prefix}~${GIT_BRANCH//[^[:alnum:]]/_}"
-    repo=$DEVELOP_YUM_REPO
 fi
 release="${release_prefix}.${BUILD_NUMBER}"
 export PKG_RELEASE=$release
-export YUM_REPO_UPLOAD_OVERRIDE=$repo
-echo "Will upload package with release $release to $repo"
 
 export PATH="$PATH:$MAVEN_DIR/bin"
 
