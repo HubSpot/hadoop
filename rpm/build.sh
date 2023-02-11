@@ -2,6 +2,8 @@
 set -e
 set -x
 
+cd "$( dirname "${BASH_SOURCE[0]}" )"
+
 # the pom.xml has an invalid xml namespace, so just remove that so xmllint can parse it.
 cat $WORKSPACE/pom.xml | sed '15 s/xmlns=".*"//g' > $TEMP_OUTPUT_DIR/pom.xml.tmp
 HADOOP_VERSION=$(echo "cat /project/version/text()" | xmllint --nocdata --shell $TEMP_OUTPUT_DIR/pom.xml.tmp | sed '1d;$d')
