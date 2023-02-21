@@ -364,7 +364,7 @@ public class NameNodeProxiesClient {
     final long version = RPC.getProtocolVersion(ClientNamenodeProtocolPB.class);
     ClientNamenodeProtocolPB proxy = RPC.getProtocolProxy(
         ClientNamenodeProtocolPB.class, version, address, ugi, conf,
-        NetUtils.getDefaultSocketFactory(conf),
+        NetUtils.getSocketFactory(conf, ClientProtocol.class),
         org.apache.hadoop.ipc.Client.getTimeout(conf), defaultPolicy,
         fallbackToSimpleAuth, alignmentContext).getProxy();
 

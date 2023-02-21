@@ -46,6 +46,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import javax.net.SocketFactory;
 
+import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
 import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
@@ -98,7 +99,19 @@ public class NetUtils {
     SocketFactory factory = null;
 
     String propValue =
-        conf.get("hadoop.rpc.socket.factory.class." + clazz.getSimpleName());
+        conf.get("hubspot.hadoop.rpc.socket.factory.class." + clazz.getSimpleName(),
+            conf.get("hadoop.rpc.socket.factory.class." + clazz.getSimpleName()));
+
+    // HubSpot modification: if our configuration asks for HBaseSSLSocketFactory, but this is not
+    // on the classpath, then go back to the default socket factory.
+    if ("com.hubspot.hbase.auth.HBaseSSLSocketFactory".equals(propValue)) {
+      try {
+        Class.forName(propValue);
+      } catch (ClassNotFoundException ignored) {
+        propValue = null;
+      }
+    }
+
     if ((propValue != null) && (propValue.length() > 0))
       factory = getSocketFactoryFromProperty(conf, propValue);
 
@@ -119,9 +132,20 @@ public class NetUtils {
    */
   public static SocketFactory getDefaultSocketFactory(Configuration conf) {
 
-    String propValue = conf.get(
-        CommonConfigurationKeysPublic.HADOOP_RPC_SOCKET_FACTORY_CLASS_DEFAULT_KEY,
-        CommonConfigurationKeysPublic.HADOOP_RPC_SOCKET_FACTORY_CLASS_DEFAULT_DEFAULT);
+    String propValue = conf.get("hubspot." + CommonConfigurationKeysPublic.HADOOP_RPC_SOCKET_FACTORY_CLASS_DEFAULT_KEY,
+        conf.get(CommonConfigurationKeysPublic.HADOOP_RPC_SOCKET_FACTORY_CLASS_DEFAULT_KEY,
+                 CommonConfigurationKeysPublic.HADOOP_RPC_SOCKET_FACTORY_CLASS_DEFAULT_DEFAULT));
+
+    // HubSpot modification: if our configuration asks for HBaseSSLSocketFactory, but this is not
+    // on the classpath, then go back to the default socket factory.
+    if ("com.hubspot.hbase.auth.HBaseSSLSocketFactory".equals(propValue)) {
+      try {
+        Class.forName(propValue);
+      } catch (ClassNotFoundException ignored) {
+        propValue = null;
+      }
+    }
+
     if ((propValue == null) || (propValue.length() == 0))
       return SocketFactory.getDefault();
 
@@ -142,8 +166,14 @@ public class NetUtils {
 
     try {
       Class<?> theClass = conf.getClassByName(propValue);
-      return (SocketFactory) ReflectionUtils.newInstance(theClass, conf);
+      SocketFactory factory = (SocketFactory) ReflectionUtils.newInstance(theClass, conf);
 
+      // HubSpot modification: give the socket factory a way to know about cluster-specific configurations, like SSL certificates
+      if (factory instanceof Configurable) {
+        ((Configurable) factory).setConf(conf);
+      }
+
+      return factory;
     } catch (ClassNotFoundException cnfe) {
       throw new RuntimeException("Socket Factory class not found: " + cnfe);
     }
@@ -563,6 +593,9 @@ public class NetUtils {
                              SocketAddress endpoint,
                              SocketAddress localAddr,
                              int timeout) throws IOException {
+    // HubSpot: replace certain ports with SSL counterpart port just before connecting, in some cases
+    endpoint = HubSpotHdfsSslUtils.sslAddr(endpoint, socket);
+
     if (socket == null || endpoint == null || timeout < 0) {
       throw new IllegalArgumentException("Illegal argument for connect()");
     }
