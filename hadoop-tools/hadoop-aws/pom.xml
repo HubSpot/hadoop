@@ -481,11 +481,27 @@
       <scope>test</scope>
       <type>test-jar</type>
     </dependency>
+    <!--
+    The following replace the AWS JDK bundle with specific dependencies.
+    -->
     <dependency>
       <groupId>com.amazonaws</groupId>
-      <artifactId>aws-java-sdk-bundle</artifactId>
+      <artifactId>aws-java-sdk-dynamodb</artifactId>
       <scope>compile</scope>
     </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk-s3</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk-sts</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <!--
+    End of replaced dependencies
+    -->
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>

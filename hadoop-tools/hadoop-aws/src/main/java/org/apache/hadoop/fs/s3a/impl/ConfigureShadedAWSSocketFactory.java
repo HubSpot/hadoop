@@ -22,7 +22,7 @@ import javax.net.ssl.HostnameVerifier;
 import java.io.IOException;
 
 import com.amazonaws.ClientConfiguration;
-import com.amazonaws.thirdparty.apache.http.conn.ssl.SSLConnectionSocketFactory;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 
 import org.apache.hadoop.security.ssl.DelegatingSSLSocketFactory;
 
