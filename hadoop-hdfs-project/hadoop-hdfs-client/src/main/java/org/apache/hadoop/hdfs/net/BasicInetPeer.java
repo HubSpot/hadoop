@@ -22,6 +22,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketAddress;
+import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 
 import org.apache.hadoop.net.unix.DomainSocket;
@@ -46,10 +47,10 @@ public class BasicInetPeer implements Peer {
 
   @Override
   public ReadableByteChannel getInputStreamChannel() {
-    /*
-     * This Socket has no channel, so there's nothing to return here.
-     */
-    return null;
+    // HubSpot modification: provide a Channel so that BlockReaderRemote can use BasicInetPeer. The underlying socket
+    // is often an SSLSocket, which does not offer a Channel, so we cannot use NioInetPeer. If you want to use
+    // NioInetPeer with SSL, you need to provide a selectable Channel that handles SSL transparently, not an easy task.
+    return Channels.newChannel(in);
   }
 
   @Override
