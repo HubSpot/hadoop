@@ -104,6 +104,10 @@
 # BIGTOP-3359
 %define _build_id_links none
 
+# HubSpot: use zstd because it decompresses much faster
+%define _binary_payload w19.zstdio
+%define _source_payload w19.zstdio
+
 Name: hadoop
 Version: %{hadoop_version}
 Release: %{release}
