@@ -44,7 +44,7 @@ before:
 
 buildResources:
   cpus: 8
-  memoryMb: 20480
+  memoryMb: 16384
 
 stepActivation:
   uploadRpms:
