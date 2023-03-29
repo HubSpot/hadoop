@@ -1911,6 +1911,10 @@ public class DataNode extends ReconfigurableBase
   private synchronized void registerBlockPoolWithSecretManager(
       DatanodeRegistration bpRegistration, String blockPoolId) throws IOException {
     ExportedBlockKeys keys = bpRegistration.getExportedKeys();
+    if (getConf().getBoolean("dfs.block.access.token.migration.enabled", false)) {
+      LOG.info("Block access token migration enabled - ignoring blockTokenEnabled={} value from NameNode", keys.isBlockTokenEnabled());
+      return;
+    }
     if (!hasAnyBlockPoolRegistered) {
       hasAnyBlockPoolRegistered = true;
       isBlockTokenEnabled = keys.isBlockTokenEnabled();
