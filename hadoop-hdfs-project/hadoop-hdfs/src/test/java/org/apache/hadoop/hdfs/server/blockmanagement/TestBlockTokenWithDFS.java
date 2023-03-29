@@ -365,8 +365,84 @@ public class TestBlockTokenWithDFS {
     }
   }
 
+  /**
+   * Tests migrating without downtime into enabling block access tokens.
+   */
+  @Test
+  public void testReadWithMigration() throws Exception {
+    MiniDFSCluster cluster = null;
+    int numDataNodes = 2;
+    Configuration conf = getConf(numDataNodes);
+    //
+    // At first, migration mode is enabled and access tokens disabled.
+    // Namenodes will start up without access tokens, but DN's will be prepared to ignore
+    // them if they receive them.
+    //
+    conf.setBoolean("dfs.block.access.token.migration.enabled", true);
+    conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, false);
+
+    try {
+      // prefer non-ephemeral port to avoid port collision on restartNameNode
+      cluster = new MiniDFSCluster.Builder(conf)
+          .nameNodePort(ServerSocketUtil.getPort(18020, 100))
+          .nameNodeHttpPort(ServerSocketUtil.getPort(19870, 100))
+          .numDataNodes(numDataNodes)
+          .build();
+      cluster.waitActive();
+      assertEquals(numDataNodes, cluster.getDataNodes().size());
+
+      //
+      // Now we enable access tokens on the namenodes. Previously, DataNodes would
+      // fail with "Inconsistent configuration of block access tokens". Since
+      // we have migration mode enabled, they are able to proceed with re-registry.
+      //
+      for (int i = 0; i < cluster.getNumNameNodes(); i++) {
+        cluster.getConfiguration(i).setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, true);
+        cluster.restartNameNode(i);
+      }
+      cluster.triggerHeartbeats();
+
+      //
+      // Do a test read, which confirms that migration mode is working
+      //
+
+      doTestRead(conf, cluster, false);
+
+      //
+      // Now that access tokens are enabled on the NameNode without downtime, we can
+      // turn off migration mode and rolling restart datanodes. When they start up,
+      // they will register and get the block access tokens and use them going forward.
+      //
+
+      conf.setBoolean("dfs.block.access.token.migration.enabled", false);
+      for (int idx = 0; idx < cluster.getDataNodes().size(); idx++) {
+        cluster.stopDataNode(idx);
+      }
+      cluster.startDataNodes(conf, numDataNodes, true, null, null);
+      cluster.waitActive();
+
+      //
+      // Do another test read which verifies that everything is working
+      // with fully enabled block access tokens.
+      //
+
+      doTestRead(conf, cluster, false);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
   protected void doTestRead(Configuration conf, MiniDFSCluster cluster,
       boolean isStriped) throws Exception {
+    // This test originally assumes that certain reads will fail and certain
+    // block access tokens will be refreshed automatically. When migration mode
+    // is enabled, the datanode just ignores any access tokens its sent -- It never
+    // throws an InvalidBlockTokenException and thus certain reads below don't fail
+    // and also the client will not automatically request updated access tokens.
+    // So we use this migrationMode boolean to gate/invert some of the assertions below.
+    boolean migrationMode = conf.getBoolean("dfs.block.access.token.migration.enabled", false);
     final int numDataNodes = cluster.getDataNodes().size();
     final NameNode nn = cluster.getNameNode();
     final NamenodeProtocols nnProto = nn.getRpcServer();
@@ -431,7 +507,7 @@ public class TestBlockTokenWithDFS {
     // verify token is expired
     assertTrue(isBlockTokenExpired(lblock));
     // read should fail
-    tryRead(conf, lblock, false);
+    tryRead(conf, lblock, migrationMode);
     // use a valid new token
     bm.setBlockToken(lblock, BlockTokenIdentifier.AccessMode.READ);
     // read should succeed
@@ -443,11 +519,11 @@ public class TestBlockTokenWithDFS {
     bm.setBlockToken(lblock, BlockTokenIdentifier.AccessMode.READ);
     lblock.getBlock().setBlockId(rightId);
     // read should fail
-    tryRead(conf, lblock, false);
+    tryRead(conf, lblock, migrationMode);
     // use a token with wrong access modes
     bm.setBlockToken(lblock, BlockTokenIdentifier.AccessMode.WRITE);
     // read should fail
-    tryRead(conf, lblock, false);
+    tryRead(conf, lblock, migrationMode);
 
     // set a long token lifetime for future tokens
     SecurityTestUtil.setBlockTokenLifetime(sm, 600 * 1000L);
@@ -502,19 +578,28 @@ public class TestBlockTokenWithDFS {
     assertEquals(numDataNodes, cluster.getDataNodes().size());
     cluster.shutdownNameNode(0);
 
-    // confirm tokens cached in in1 are still valid
+    // If migration mode is enabled, the block tokens will not have been refreshed
+    // by in1.seek, because the DataNode will not have rejected them. Expect
+    // the isBlockTokenExpired value to be true if migrationMode is enabled,
+    // otherwise false meaning the client was able transparently refresh the token
+    // when it was rejected by DN.
     lblocks = DFSTestUtil.getAllBlocks(in1);
     for (LocatedBlock blk : lblocks) {
-      assertFalse(isBlockTokenExpired(blk));
+      assertEquals(migrationMode, isBlockTokenExpired(blk));
     }
+
     // verify blockSeekTo() still works (forced to use cached tokens)
     in1.seek(0);
     assertTrue(checkFile1(in1,expected));
 
-    // confirm tokens cached in in2 are still valid
+    // If migration mode is enabled, the block tokens will not have been refreshed
+    // by in2.seekToNewSource, because the DataNode will not have rejected them. Expect
+    // the isBlockTokenExpired value to be true if migrationMode is enabled,
+    // otherwise false meaning the client was able transparently refresh the token
+    // when it was rejected by DN.
     lblocks2 = DFSTestUtil.getAllBlocks(in2);
     for (LocatedBlock blk : lblocks2) {
-      assertFalse(isBlockTokenExpired(blk));
+      assertEquals(migrationMode, isBlockTokenExpired(blk));
     }
 
     // verify blockSeekTo() still works (forced to use cached tokens)
@@ -525,11 +610,16 @@ public class TestBlockTokenWithDFS {
     }
     assertTrue(checkFile1(in2,expected));
 
-    // confirm tokens cached in in3 are still valid
+    // If migration mode is enabled, the block tokens for in3 will not have been refreshed
+    // by fetchBlockByteRange, because the DataNode will not have rejected them. Expect
+    // the isBlockTokenExpired value to be true if migrationMode is enabled,
+    // otherwise false meaning the client was able transparently refresh the token
+    // when it was rejected by DN.
     lblocks3 = DFSTestUtil.getAllBlocks(in3);
     for (LocatedBlock blk : lblocks3) {
-      assertFalse(isBlockTokenExpired(blk));
+      assertEquals(migrationMode, isBlockTokenExpired(blk));
     }
+
     // verify fetchBlockByteRange() still works (forced to use cached tokens)
     assertTrue(checkFile2(in3,expected));
 
@@ -574,11 +664,11 @@ public class TestBlockTokenWithDFS {
     // shutdown namenode so that DFSClient can't get new tokens from namenode
     cluster.shutdownNameNode(0);
 
-    // verify blockSeekTo() fails (cached tokens become invalid)
+    // verify blockSeekTo() fails if not migration mode (cached tokens become invalid)
     in1.seek(0);
-    assertFalse(checkFile1(in1,expected));
-    // verify fetchBlockByteRange() fails (cached tokens become invalid)
-    assertFalse(checkFile2(in3,expected));
+    assertEquals(migrationMode, checkFile1(in1,expected));
+    // verify fetchBlockByteRange() fails if not migration mode (cached tokens become invalid)
+    assertEquals(migrationMode, checkFile2(in3,expected));
 
     // restart the namenode to allow DFSClient to re-fetch tokens
     cluster.restartNameNode(0);
