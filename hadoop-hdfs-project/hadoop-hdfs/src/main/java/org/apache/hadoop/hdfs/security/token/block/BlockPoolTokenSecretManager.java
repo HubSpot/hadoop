@@ -40,6 +40,12 @@ public class BlockPoolTokenSecretManager extends
   private final Map<String, BlockTokenSecretManager> map =
       new ConcurrentHashMap<>();
 
+  private volatile boolean checkAccessEnabled = true;
+
+  public void setCheckAccessEnabled(boolean checkAccessEnabled) {
+    this.checkAccessEnabled = checkAccessEnabled;
+  }
+
   /**
    * Add a block pool Id and corresponding {@link BlockTokenSecretManager} to map
    * @param bpid block pool Id
@@ -89,6 +95,9 @@ public class BlockPoolTokenSecretManager extends
       ExtendedBlock block, AccessMode mode,
       StorageType[] storageTypes, String[] storageIds)
       throws InvalidToken {
+    if (!checkAccessEnabled) {
+      return;
+    }
     get(block.getBlockPoolId()).checkAccess(id, userId, block, mode,
         storageTypes, storageIds);
   }
@@ -101,6 +110,9 @@ public class BlockPoolTokenSecretManager extends
   public void checkAccess(BlockTokenIdentifier id, String userId,
       ExtendedBlock block, AccessMode mode, StorageType[] storageTypes)
       throws InvalidToken {
+    if (!checkAccessEnabled) {
+      return;
+    }
     get(block.getBlockPoolId()).checkAccess(id, userId, block, mode,
         storageTypes);
   }
@@ -112,6 +124,9 @@ public class BlockPoolTokenSecretManager extends
   public void checkAccess(BlockTokenIdentifier id, String userId,
                           ExtendedBlock block, AccessMode mode)
       throws InvalidToken {
+    if (!checkAccessEnabled) {
+      return;
+    }
     get(block.getBlockPoolId()).checkAccess(id, userId, block, mode);
   }
 
@@ -122,6 +137,9 @@ public class BlockPoolTokenSecretManager extends
   public void checkAccess(Token<BlockTokenIdentifier> token,
       String userId, ExtendedBlock block, AccessMode mode)
       throws InvalidToken {
+    if (!checkAccessEnabled) {
+      return;
+    }
     get(block.getBlockPoolId()).checkAccess(token, userId, block, mode);
   }
 
@@ -134,6 +152,9 @@ public class BlockPoolTokenSecretManager extends
       String userId, ExtendedBlock block, AccessMode mode,
       StorageType[] storageTypes, String[] storageIds)
       throws InvalidToken {
+    if (!checkAccessEnabled) {
+      return;
+    }
     get(block.getBlockPoolId()).checkAccess(token, userId, block, mode,
         storageTypes, storageIds);
   }

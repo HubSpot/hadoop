@@ -1605,13 +1605,16 @@ public class DataNode extends ReconfigurableBase
   private synchronized void registerBlockPoolWithSecretManager(
       DatanodeRegistration bpRegistration, String blockPoolId) throws IOException {
     ExportedBlockKeys keys = bpRegistration.getExportedKeys();
-    if (getConf().getBoolean("dfs.block.access.token.migration.enabled", false)) {
-      LOG.info("Block access token migration enabled - ignoring blockTokenEnabled={} value from NameNode", keys.isBlockTokenEnabled());
-      return;
-    }
+    boolean migrationModeEnabled = getConf()
+        .getBoolean("dfs.block.access.token.migration.enabled", false);
+
     if (!hasAnyBlockPoolRegistered) {
       hasAnyBlockPoolRegistered = true;
       isBlockTokenEnabled = keys.isBlockTokenEnabled();
+    } else if (migrationModeEnabled && keys.isBlockTokenEnabled() && !isBlockTokenEnabled) {
+      LOG.info("Block access token migration enabled and we received request to newly enable");
+      isBlockTokenEnabled = true;
+      blockPoolTokenSecretManager.setCheckAccessEnabled(false);
     } else {
       if (isBlockTokenEnabled != keys.isBlockTokenEnabled()) {
         throw new RuntimeException("Inconsistent configuration of block access"
