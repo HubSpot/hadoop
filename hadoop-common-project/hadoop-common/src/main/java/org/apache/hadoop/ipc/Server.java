@@ -3302,7 +3302,7 @@ public abstract class Server {
         throw new IllegalArgumentException(AuthenticationMethod.TOKEN +
             " authentication requires a secret manager");
       } 
-    } else if (secretManager != null) {
+    } else if (secretManager != null && !isTokenMigrationModeEnabled(conf)) {
       LOG.debug(AuthenticationMethod.TOKEN +
           " authentication enabled for secret manager");
       // most preferred, go to the front of the line!
@@ -3312,6 +3312,10 @@ public abstract class Server {
     
     LOG.debug("Server accepts auth methods:" + authMethods);
     return authMethods;
+  }
+
+  private boolean isTokenMigrationModeEnabled(Configuration conf) {
+    return conf.getBoolean("dfs.block.access.token.migration.enabled", false);
   }
   
   private void closeConnection(Connection connection) {
