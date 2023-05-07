@@ -39,6 +39,8 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PROCESS_COMMANDS
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PROCESS_COMMANDS_THRESHOLD_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MAX_LOCKED_MEMORY_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MAX_LOCKED_MEMORY_KEY;
@@ -95,6 +97,7 @@ public class DNConf {
   final boolean dropCacheBehindReads;
   final boolean syncOnClose;
   final boolean encryptDataTransfer;
+  final boolean unsafeDataTransferPlaintextFallback;
   final boolean connectToDnViaHostname;
   final boolean overwriteDownstreamDerivedQOP;
   private final boolean pmemCacheRecoveryEnabled;
@@ -251,6 +254,7 @@ public class DNConf {
     this.encryptDataTransfer = getConf().getBoolean(
         DFS_ENCRYPT_DATA_TRANSFER_KEY,
         DFS_ENCRYPT_DATA_TRANSFER_DEFAULT);
+    this.unsafeDataTransferPlaintextFallback = getConf().getBoolean(UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_KEY, UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_DEFAULT);
     this.overwriteDownstreamDerivedQOP = getConf().getBoolean(
         DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_KEY,
         DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_DEFAULT);
@@ -325,6 +329,10 @@ public class DNConf {
    */
   public boolean getEncryptDataTransfer() {
     return encryptDataTransfer;
+  }
+
+  public boolean getUnsafeDataTransferPlaintextFallback() {
+    return unsafeDataTransferPlaintextFallback;
   }
 
   /**
