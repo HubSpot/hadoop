@@ -21,7 +21,10 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSF
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY;
 import static org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil.*;
 
+import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+
+import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -365,13 +368,31 @@ public class SaslDataTransferServer {
       InputStream underlyingIn, Map<String, String> saslProps,
       CallbackHandler callbackHandler) throws IOException {
 
-    DataInputStream in = new DataInputStream(underlyingIn);
+    DataInputStream in;
+    if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
+      BufferedInputStream bufferedIn = new BufferedInputStream(underlyingIn);
+      in = new DataInputStream(bufferedIn);
+    } else {
+      in = new DataInputStream(underlyingIn);
+    }
     DataOutputStream out = new DataOutputStream(underlyingOut);
 
+    if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
+      in.mark(4);
+    }
     int magicNumber = in.readInt();
     if (magicNumber != SASL_TRANSFER_MAGIC_NUMBER) {
-      throw new InvalidMagicNumberException(magicNumber, 
-          dnConf.getEncryptDataTransfer());
+      if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
+        LOG.info("A SASL handshake was attempted with peer {}, but the magic number {} was not seen. " +
+                        "Because {} is true, skipping handshake and using plaintext connection.",
+                peer, String.format("0x%X", SASL_TRANSFER_MAGIC_NUMBER),
+                DFSConfigKeys.UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_KEY);
+        in.reset();
+        return new IOStreamPair(in, out);
+      } else {
+        throw new InvalidMagicNumberException(magicNumber,
+                dnConf.getEncryptDataTransfer());
+      }
     }
     try {
       // step 1
