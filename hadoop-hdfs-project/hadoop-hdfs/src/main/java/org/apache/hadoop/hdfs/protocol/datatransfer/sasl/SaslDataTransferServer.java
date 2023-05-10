@@ -114,7 +114,7 @@ public class SaslDataTransferServer {
   public IOStreamPair receive(Peer peer, OutputStream underlyingOut,
       InputStream underlyingIn, int xferPort, DatanodeID datanodeId)
       throws IOException {
-    if (dnConf.getEncryptDataTransfer()) {
+    if (dnConf.getAcceptEncryptedDataTransfer()) {
       LOG.debug(
         "SASL server doing encrypted handshake for peer = {}, datanodeId = {}",
         peer, datanodeId);
@@ -389,7 +389,7 @@ public class SaslDataTransferServer {
         return new IOStreamPair(in, out);
       } else {
         throw new InvalidMagicNumberException(magicNumber,
-                dnConf.getEncryptDataTransfer());
+                dnConf.getAcceptEncryptedDataTransfer());
       }
     }
     try {
