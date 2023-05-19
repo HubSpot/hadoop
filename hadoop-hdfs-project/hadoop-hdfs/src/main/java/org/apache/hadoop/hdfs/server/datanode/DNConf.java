@@ -19,7 +19,6 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_ACCEPT_ENCRYPTED_DATA_TRANSFER_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INITIAL_DELAY_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INITIAL_DELAY_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT;
@@ -97,8 +96,7 @@ public class DNConf {
   final boolean syncBehindWritesInBackground;
   final boolean dropCacheBehindReads;
   final boolean syncOnClose;
-  final boolean acceptEncryptedDataTransfer;
-  final boolean encryptDataTransferOutgoing;
+  final boolean encryptDataTransfer;
   final boolean unsafeDataTransferPlaintextFallback;
   final boolean connectToDnViaHostname;
   final boolean overwriteDownstreamDerivedQOP;
@@ -252,12 +250,10 @@ public class DNConf {
     this.minimumNameNodeVersion = getConf().get(
         DFS_DATANODE_MIN_SUPPORTED_NAMENODE_VERSION_KEY,
         DFS_DATANODE_MIN_SUPPORTED_NAMENODE_VERSION_DEFAULT);
-
-    this.encryptDataTransferOutgoing = getConf().getBoolean(
+    
+    this.encryptDataTransfer = getConf().getBoolean(
         DFS_ENCRYPT_DATA_TRANSFER_KEY,
         DFS_ENCRYPT_DATA_TRANSFER_DEFAULT);
-    this.acceptEncryptedDataTransfer = getConf().getBoolean(DFS_ACCEPT_ENCRYPTED_DATA_TRANSFER_KEY,
-            getConf().getBoolean(DFS_ENCRYPT_DATA_TRANSFER_KEY, DFS_ENCRYPT_DATA_TRANSFER_DEFAULT));
     this.unsafeDataTransferPlaintextFallback = getConf().getBoolean(UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_KEY, UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_DEFAULT);
     this.overwriteDownstreamDerivedQOP = getConf().getBoolean(
         DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_KEY,
@@ -331,12 +327,8 @@ public class DNConf {
    *
    * @return boolean true if encryption enabled for DataTransferProtocol
    */
-  public boolean getEncryptDataTransferOutgoing() {
-    return encryptDataTransferOutgoing;
-  }
-
-  public boolean getAcceptEncryptedDataTransfer() {
-    return acceptEncryptedDataTransfer;
+  public boolean getEncryptDataTransfer() {
+    return encryptDataTransfer;
   }
 
   public boolean getUnsafeDataTransferPlaintextFallback() {

@@ -2675,7 +2675,7 @@ public class DataNode extends ReconfigurableBase
     return new DataEncryptionKeyFactory() {
       @Override
       public DataEncryptionKey newDataEncryptionKey() {
-        return dnConf.encryptDataTransferOutgoing ?
+        return dnConf.encryptDataTransfer ?
           blockPoolTokenSecretManager.generateDataEncryptionKey(
             block.getBlockPoolId()) : null;
       }
