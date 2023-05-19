@@ -129,7 +129,7 @@ public class SaslDataTransferServer {
         "SASL server skipping handshake in secured configuration for "
         + "peer = {}, datanodeId = {}", peer, datanodeId);
       return new IOStreamPair(underlyingIn, underlyingOut);
-    } else if (dnConf.getSaslPropsResolver() != null) {
+    } else if (dnConf.getSaslPropsResolver() != null || dnConf.getDataTransferAcceptSasl()) {
       LOG.debug(
         "SASL server doing general handshake for peer = {}, datanodeId = {}",
         peer, datanodeId);
@@ -389,7 +389,7 @@ public class SaslDataTransferServer {
         return new IOStreamPair(in, out);
       } else {
         throw new InvalidMagicNumberException(magicNumber,
-                dnConf.getEncryptDataTransfer());
+                dnConf.getDataTransferAcceptSasl());
       }
     }
     try {

@@ -1215,6 +1215,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
 
   // Security-related configs
   public static final String DFS_ENCRYPT_DATA_TRANSFER_KEY = "dfs.encrypt.data.transfer";
+  public static final String DFS_DATA_TRANSFER_ACCEPT_SASL_KEY = "dfs.data.transfer.accept.sasl";
+  public static final boolean DFS_DATA_TRANSFER_ACCEPT_SASL_DEFAULT = false;
   public static final String UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_KEY = "unsafe.dfs.encrypt.data.transfer.plaintext.fallback";
   public static final boolean UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_DEFAULT = false;
   public static final String DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_KEY =
