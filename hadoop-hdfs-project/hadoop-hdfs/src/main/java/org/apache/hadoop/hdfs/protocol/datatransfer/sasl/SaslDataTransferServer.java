@@ -34,6 +34,7 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
 
+import javax.annotation.Nullable;
 import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.CallbackHandler;
 import javax.security.auth.callback.NameCallback;
@@ -296,8 +297,17 @@ public class SaslDataTransferServer {
     }
 
     SaslPropertiesResolver saslPropsResolver = dnConf.getSaslPropsResolver();
-    Map<String, String> saslProps = saslPropsResolver.getServerProperties(
-      getPeerAddress(peer));
+    Map<String, String> saslProps;
+    if (saslPropsResolver != null) {
+      saslProps = saslPropsResolver.getServerProperties(
+              getPeerAddress(peer));
+    } else if (dnConf.getDataTransferAcceptSasl()) {
+      // This code path provides a way to accept encrypted connections even we don't make them.
+      // dnConf.getSaslPropsResolver() is non-null only if dfs.data.transfer.protection is set.
+      saslProps = createSaslPropertiesForEncryption(dnConf.getEncryptionAlgorithm());
+    } else {
+      saslProps = null;
+    }
 
     CallbackHandler callbackHandler = new SaslServerCallbackHandler(
       new PasswordFunction() {
@@ -363,7 +373,7 @@ public class SaslDataTransferServer {
    * @throws IOException for any error
    */
   private IOStreamPair doSaslHandshake(Peer peer, OutputStream underlyingOut,
-      InputStream underlyingIn, Map<String, String> saslProps,
+      InputStream underlyingIn, @Nullable Map<String, String> saslProps,
       CallbackHandler callbackHandler) throws IOException {
 
     DataInputStream in;
@@ -392,6 +402,12 @@ public class SaslDataTransferServer {
                 dnConf.getDataTransferAcceptSasl());
       }
     }
+
+    if (saslProps == null) {
+      throw new IllegalStateException("No SASL properties set, have you forgotten to set dfs.data.transfer.protection " +
+              "and/or dfs.data.transfer.accept.sasl?");
+    }
+
     try {
       // step 1
       SaslMessageWithHandshake message = readSaslMessageWithHandshakeSecret(in);
