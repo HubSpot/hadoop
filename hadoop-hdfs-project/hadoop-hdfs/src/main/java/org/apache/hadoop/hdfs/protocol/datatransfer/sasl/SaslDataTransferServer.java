@@ -302,9 +302,9 @@ public class SaslDataTransferServer {
       saslProps = saslPropsResolver.getServerProperties(
               getPeerAddress(peer));
     } else if (dnConf.getDataTransferAcceptSasl()) {
-      // This code path provides a way to accept encrypted connections even we don't make them.
+      // This code path provides a way to accept SASL connections even we don't make them.
       // dnConf.getSaslPropsResolver() is non-null only if dfs.data.transfer.protection is set.
-      saslProps = createSaslPropertiesForEncryption(dnConf.getEncryptionAlgorithm());
+      saslProps = unsafeCreateSaslPropertiesForGeneralHandshake(dnConf.getEncryptionAlgorithm());
     } else {
       saslProps = null;
     }
