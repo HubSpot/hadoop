@@ -146,10 +146,10 @@ Source28: kms.default
 
 Buildroot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id} -u -n)
 
-Requires: coreutils, /usr/sbin/useradd, /usr/sbin/usermod, /sbin/chkconfig, /sbin/service
+Requires: coreutils, /usr/sbin/useradd, /usr/sbin/usermod
 Requires: psmisc, %{netcat_package}
 Requires: openssl-devel
-Requires: coreutils, /lib/lsb/init-functions
+Requires: coreutils
 
 # Sadly, Sun/Oracle JDK in RPM form doesn't provide libjvm.so, which means we have
 # to set AutoReq to no in order to minimize confusion. Not ideal, but seems to work.
