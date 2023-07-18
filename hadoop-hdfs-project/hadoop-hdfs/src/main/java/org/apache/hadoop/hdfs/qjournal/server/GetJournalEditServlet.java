@@ -111,6 +111,7 @@ public class GetJournalEditServlet extends DfsServlet {
 
     String clientPattern = conf.get(DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY + ".pattern");
     if (clientPattern != null && !clientPattern.isEmpty()) {
+      String remotePrincipal = request.getUserPrincipal().getName();
       Pattern pattern = GlobPattern.compile(clientPattern);
       LOG.debug("isValidRequestor is comparing to valid NameNode principal pattern: " + clientPattern);
       if (pattern.matcher(remotePrincipal).matches()) {
