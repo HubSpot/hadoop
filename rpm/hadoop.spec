@@ -21,7 +21,6 @@
 # that would make newer RPM debuginfo generation scripts happy.
 %undefine _missing_build_ids_terminate_build
 
-%define major_version 3.3
 %define etc_hadoop /etc/%{name}
 %define etc_yarn /etc/yarn
 %define config_hadoop %{etc_hadoop}/conf
@@ -177,8 +176,8 @@ See https://hadoop.apache.org/ for more info on hadoop.
 %package hdfs-namenode
 Summary: The Hadoop namenode manages the block locations of HDFS files
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description hdfs-namenode
 The Hadoop Distributed Filesystem (HDFS) requires one unique server, the
@@ -188,8 +187,8 @@ namenode, which manages the block locations of files on the filesystem.
 %package hdfs-zkfc
 Summary: Hadoop HDFS failover controller
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description hdfs-zkfc
 The Hadoop HDFS failover controller is a ZooKeeper client which also
@@ -201,8 +200,8 @@ election.
 %package hdfs-journalnode
 Summary: Hadoop HDFS JournalNode
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description hdfs-journalnode
 The HDFS JournalNode is responsible for persisting NameNode edit logs.
@@ -212,8 +211,8 @@ separate machines in the cluster.
 %package hdfs-datanode
 Summary: Hadoop Data Node
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description hdfs-datanode
 The Data Nodes in the Hadoop Cluster are responsible for serving up
@@ -223,8 +222,8 @@ blocks of data over the network to Hadoop Distributed Filesystem
 %package hdfs-dfsrouter
 Summary: HDFS Router Server
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description hdfs-dfsrouter
 HDFS Router Server which supports Router Based Federation.
@@ -232,8 +231,8 @@ HDFS Router Server which supports Router Based Federation.
 %package httpfs
 Summary: HTTPFS for Hadoop
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description httpfs
 The server providing HTTP REST API support for the complete FileSystem/FileContext
@@ -242,8 +241,8 @@ interface in HDFS.
 %package kms
 Summary: KMS for Hadoop
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description kms
 Cryptographic Key Management Server based on Hadoop KeyProvider API.
@@ -251,8 +250,8 @@ Cryptographic Key Management Server based on Hadoop KeyProvider API.
 %package yarn-resourcemanager
 Summary: YARN Resource Manager
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description yarn-resourcemanager
 The resource manager manages the global assignment of compute resources to applications
@@ -260,8 +259,8 @@ The resource manager manages the global assignment of compute resources to appli
 %package yarn-nodemanager
 Summary: YARN Node Manager
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description yarn-nodemanager
 The NodeManager is the per-machine framework agent who is responsible for
@@ -271,8 +270,8 @@ reporting the same to the ResourceManager/Scheduler.
 %package yarn-proxyserver
 Summary: YARN Web Proxy
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description yarn-proxyserver
 The web proxy server sits in front of the YARN application master web UI.
@@ -280,8 +279,8 @@ The web proxy server sits in front of the YARN application master web UI.
 %package yarn-timelineserver
 Summary: YARN Timeline Server
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description yarn-timelineserver
 Storage and retrieval of applications' current as well as historic information in a generic fashion is solved in YARN through the Timeline Server.
@@ -289,8 +288,8 @@ Storage and retrieval of applications' current as well as historic information i
 %package mapreduce-historyserver
 Summary: MapReduce History Server
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description mapreduce-historyserver
 The History server keeps records of the different activities being performed on a Apache Hadoop cluster
@@ -298,8 +297,8 @@ The History server keeps records of the different activities being performed on 
 %package yarn-router
 Summary: YARN Router Server
 Group: System/Daemons
-Requires: %{name} >= %{major_version}
-Requires(pre): %{name} >= %{major_version}
+Requires: %{name} >= %{hadoop_version}
+Requires(pre): %{name} >= %{hadoop_version}
 
 %description yarn-router
 YARN Router Server which supports YARN Federation.

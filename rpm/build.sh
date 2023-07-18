@@ -19,7 +19,7 @@ echo "Building Hadoop version $HADOOP_VERSION"
 
 # MAIN_BRANCH goes to MAIN_YUM_REPO, with release hs.buildNumber
 # All others go to DEVELOP_YUM_REPO, with release hs~branch.buildNumber
-MAIN_BRANCH="hubspot-3.3"
+MAIN_BRANCH="hubspot-3.3.6"
 # We want our resulting version to follow this schema:
 # master branch: {hadoop_version}-hs.{build_number}.el8
 # other branches: {hadoop_version}-hs~{branch_name}.{build_number}.el8, where branch_name substitutes underscore for non-alpha-numeric characters
