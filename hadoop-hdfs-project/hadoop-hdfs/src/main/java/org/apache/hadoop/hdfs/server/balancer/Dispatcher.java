@@ -22,6 +22,7 @@ import static org.apache.hadoop.hdfs.protocolPB.PBHelperClient.vintPrefixed;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -45,7 +46,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicReference;
 
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -88,7 +91,7 @@ import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 /** Dispatching block replica moves between datanodes. */
 @InterfaceAudience.Private
-public class Dispatcher {
+public class Dispatcher implements Closeable {
   static final Logger LOG = LoggerFactory.getLogger(Dispatcher.class);
 
   /**
@@ -232,8 +235,14 @@ public class Dispatcher {
     }
   }
 
+  public enum MoveState {
+    PENDING, FINISHED, FAILED;
+  }
+
   /** This class keeps track of a scheduled reportedBlock move */
   public class PendingMove {
+    // HubSpot modification: We need to know if moves are done before shutting down.
+    private final AtomicReference<MoveState> state = new AtomicReference<>(MoveState.PENDING);
     private DBlock reportedBlock;
     private Source source;
     private DDatanode proxySource;
@@ -243,6 +252,10 @@ public class Dispatcher {
     PendingMove(Source source, StorageGroup target) {
       this.source = source;
       this.target = target;
+    }
+
+    public AtomicReference<MoveState> getState() {
+      return state;
     }
 
     public DatanodeInfo getSource() {
@@ -357,6 +370,8 @@ public class Dispatcher {
 
     /** Dispatch the move to the proxy source & wait for the response. */
     private void dispatch() {
+      MoveState newState = MoveState.FINISHED;
+
       Socket sock = new Socket();
       DataOutputStream out = null;
       DataInputStream in = null;
@@ -405,6 +420,7 @@ public class Dispatcher {
         LOG.info("Successfully moved " + this);
       } catch (IOException e) {
         LOG.warn("Failed to move " + this, e);
+        newState = MoveState.FAILED;
         target.getDDatanode().setHasFailure();
         // Check that the failure is due to block pinning errors.
         if (e instanceof BlockPinningException) {
@@ -430,7 +446,7 @@ public class Dispatcher {
         target.getDDatanode().removePendingBlock(this);
 
         synchronized (this) {
-          reset();
+          reset(newState);
         }
         synchronized (Dispatcher.this) {
           Dispatcher.this.notifyAll();
@@ -472,11 +488,12 @@ public class Dispatcher {
     }
 
     /** reset the object */
-    private void reset() {
+    private void reset(MoveState newState) {
       reportedBlock = null;
       source = null;
       proxySource = null;
       target = null;
+      state.set(newState);
     }
   }
 
@@ -695,14 +712,15 @@ public class Dispatcher {
     }
 
     synchronized ExecutorService initMoveExecutor(int poolSize) {
-      return moveExecutor = Executors.newFixedThreadPool(poolSize);
+      return moveExecutor = Executors.newFixedThreadPool(poolSize, new ThreadFactoryBuilder().setNameFormat("move-thread-").build());
     }
 
     synchronized ExecutorService getMoveExecutor() {
       return moveExecutor;
     }
 
-    synchronized void shutdownMoveExecutor() {
+    // HubSpot Modification: We create our own DDataNodes, so we need to be able to shut them down
+    public synchronized void shutdownMoveExecutor() {
       if (moveExecutor != null) {
         moveExecutor.shutdown();
         moveExecutor = null;
@@ -1081,7 +1099,7 @@ public class Dispatcher {
     this.cluster = NetworkTopology.getInstance(conf);
 
     this.dispatchExecutor = dispatcherThreads == 0? null
-        : Executors.newFixedThreadPool(dispatcherThreads);
+        : Executors.newFixedThreadPool(dispatcherThreads, new ThreadFactoryBuilder().setNameFormat("dispatcher-").build());
     this.moverThreadAllocator = new Allocator(moverThreads);
     this.maxMoverThreads = moverThreads;
     this.maxConcurrentMovesPerNode = maxConcurrentMovesPerNode;
@@ -1238,23 +1256,7 @@ public class Dispatcher {
     assert concurrentThreads > 0 : "Number of concurrent threads is 0.";
     LOG.info("Balancer concurrent dispatcher threads = {}", concurrentThreads);
 
-    // Determine the size of each mover thread pool per target
-    int threadsPerTarget = maxMoverThreads/targets.size();
-    if (threadsPerTarget == 0) {
-      // Some scheduled moves will get ignored as some targets won't have
-      // any threads allocated.
-      moverThreadAllocator.setLotSize(1);
-      LOG.warn(DFSConfigKeys.DFS_BALANCER_MOVERTHREADS_KEY + "=" +
-          maxMoverThreads + " is too small for moving blocks to " +
-          targets.size() + " targets. Balancing may be slower.");
-    } else {
-      if  (threadsPerTarget > maxConcurrentMovesPerNode) {
-        threadsPerTarget = maxConcurrentMovesPerNode;
-        LOG.info("Limiting threads per target to the specified max.");
-      }
-      moverThreadAllocator.setLotSize(threadsPerTarget);
-      LOG.info("Allocating " + threadsPerTarget + " threads per target.");
-    }
+    setLotSize(targets);
 
     final Iterator<Source> i = sources.iterator();
     for (int j = 0; j < futures.length; j++) {
@@ -1283,6 +1285,32 @@ public class Dispatcher {
         (getBblocksMoved() - blocksLastMoved));
 
     return getBytesMoved() - bytesLastMoved;
+  }
+
+  /**
+   * Sets the lot size for the thread move thread allocator based
+   * on the number of targets, providing an equal number of threads
+   * for each target.
+   * @param targets The targets to be operated on.
+   */
+  public void setLotSize(Collection<StorageGroup> targets) {
+    // Determine the size of each mover thread pool per target
+    int threadsPerTarget = maxMoverThreads/targets.size();
+    if (threadsPerTarget == 0) {
+      // Some scheduled moves will get ignored as some targets won't have
+      // any threads allocated.
+      moverThreadAllocator.setLotSize(1);
+      LOG.warn(DFSConfigKeys.DFS_BALANCER_MOVERTHREADS_KEY + "=" +
+              maxMoverThreads + " is too small for moving blocks to " +
+              targets.size() + " targets. Balancing may be slower.");
+    } else {
+      if  (threadsPerTarget > maxConcurrentMovesPerNode) {
+        threadsPerTarget = maxConcurrentMovesPerNode;
+        LOG.info("Limiting threads per target to the specified max.");
+      }
+      moverThreadAllocator.setLotSize(threadsPerTarget);
+      LOG.info("Allocating " + threadsPerTarget + " threads per target.");
+    }
   }
 
   /**
@@ -1430,6 +1458,23 @@ public class Dispatcher {
     if (dispatchExecutor != null) {
       dispatchExecutor.shutdownNow();
     }
+  }
+
+  // HubSpot modification: Perform the equivalent of reset() and then shutDown() when closing.
+  @Override
+  public void close() throws IOException {
+    storageGroupMap.clear();
+    sources.clear();
+
+    moverThreadAllocator.reset();
+    for(StorageGroup t : targets) {
+      t.getDDatanode().shutdownMoveExecutor();
+    }
+    targets.clear();
+    globalBlocks.removeAllButRetain(movedBlocks);
+    movedBlocks.cleanup();
+
+    shutdownNow();
   }
 
   static class Util {
