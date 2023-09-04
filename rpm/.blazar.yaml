@@ -13,7 +13,7 @@ cache:
   - /root/.m2/repository
 
 env:
-  PLATFORMS: "amd64"
+  PLATFORMS: "arm64 amd64"
   DISABLE_CENTOS_6_RPMS: "true"
   ENABLE_CENTOS_8_RPMS: "true"
 
@@ -24,8 +24,8 @@ env:
   YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8: "UPDATE ME"
 
   # The entry point script for the rpm build
-  RPM_BUILD_COMMAND: "../build.sh"
-  BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/hs-linux-darwin-toolchain-arm64/apache-hadoop-build-container:latest"
+  RPM_BUILD_COMMAND: "./build.sh"
+  BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/apache-hadoop-build-container:latest"
   CONTAINER_TEMP_OUTPUT_DIR: /temporary_artifacts
   CONTAINER_RPMS_OUTPUT_DIR: /generated_rpms
 
