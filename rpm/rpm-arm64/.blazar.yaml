@@ -19,9 +19,7 @@ env:
   DISABLE_CENTOS_6_RPMS: "true"
   ENABLE_CENTOS_8_RPMS: "true"
 
-  MAIN_YUM_REPO: "8_hs-hadoop"
-  DEVELOP_YUM_REPO: "8_hs-hadoop-develop"
-  YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8: "${8_hs-hadoop}${GIT_NON_DEFAULT_BRANCH:+-develop}"
+  YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8: "8_hs-hadoop${GIT_NON_DEFAULT_BRANCH:+-develop}"
 
   # The entry point script for the rpm build
   RPM_BUILD_COMMAND: "../build.sh"
