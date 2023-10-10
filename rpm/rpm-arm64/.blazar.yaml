@@ -19,11 +19,7 @@ env:
   DISABLE_CENTOS_6_RPMS: "true"
   ENABLE_CENTOS_8_RPMS: "true"
 
-  MAIN_BRANCH: "hubspot-3.3"
-  MAIN_YUM_REPO: "8_hs-hadoop"
-  DEVELOP_YUM_REPO: "8_hs-hadoop-develop"
-  # This will be updated automatically by the "Set yum repo and package version" step below
-  YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8: "UPDATE ME"
+  YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8: "8_hs-hadoop${GIT_NON_DEFAULT_BRANCH:+-develop}"
 
   # The entry point script for the rpm build
   RPM_BUILD_COMMAND: "../build.sh"
@@ -34,15 +30,7 @@ env:
 before:
   - description: Set yum repo
     commands:
-      - |
-          if [ "$GIT_BRANCH" = "$MAIN_BRANCH" ]; then
-            repo=$MAIN_YUM_REPO
-          else
-            repo=$DEVELOP_YUM_REPO
-          fi
-          # exports in this rc file are available in all steps
-          echo "export YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8=$repo" >> $BUILD_COMMAND_RC_FILE
-          echo "Will upload package to $repo"
+      - echo "Will upload package to $YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8"
 
 buildResources:
   cpus: 8
