@@ -11,11 +11,14 @@ set -ex
 printenv
 
 # We base the expected main branch and resulting maven version for clients on the hadoop minor version
-# The reason for this is hadoop re-branches for each minor release (2.4, 2.5, 2.6, etc). At each re-branch
+# The reason for this is hadoop re-branches for each minor release (3.3.1, 3.3.6, etc). At each re-branch
 # the histories diverge. So we'll need to create our own fork of each new minor release branch.
 # The convention is a fork named "hubspot-$minorVersion", and the maven coordinates "$minorVersion-hubspot-SNAPSHOT"
-MINOR_VERSION="3.3"
-MAIN_BRANCH="hubspot-${MINOR_VERSION}"
+MINOR_VERSION="3.3.1"
+# This is specific to 3.3.1 and should be changed for future versions as Hadoop actually reversions with the third
+# digit. For the next version of 3.3, remove BRANCH_MINOR_VERSION and change the branch name accordingly.
+BRANCH_MINOR_VERSION="3.3"
+MAIN_BRANCH="hubspot-${BRANCH_MINOR_VERSION}"
 
 # If we bump our hadoop build version, we should bump this as well
 # At some point it would be good to more closely link this to our hadoop build, but that can only happen
