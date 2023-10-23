@@ -10,18 +10,20 @@
 set -ex
 printenv
 
-# We base the expected main branch and resulting maven version for clients on the hadoop minor version
-# The reason for this is hadoop re-branches for each minor release (2.4, 2.5, 2.6, etc). At each re-branch
-# the histories diverge. So we'll need to create our own fork of each new minor release branch.
-# The convention is a fork named "hubspot-$minorVersion", and the maven coordinates "$minorVersion-hubspot-SNAPSHOT"
-MINOR_VERSION="3.3"
-MAIN_BRANCH="hubspot-${MINOR_VERSION}"
+# We base the expected main branch and resulting maven version for clients on the hadoop patch version
+# The reason for this is hadoop re-branches for each patch release (3.3.1, 3.3.2, etc). At each re-branch
+# the histories diverge. So we'll need to create our own fork of each new patch release branch.
+# The convention is a fork named "hubspot-$patchVersion", and the maven coordinates "$patchVersion-hubspot-SNAPSHOT"
+PATCH_VERSION="3.3.6"
+MAIN_BRANCH="hubspot-${PATCH_VERSION}"
 
 # If we bump our hadoop build version, we should bump this as well
 # At some point it would be good to more closely link this to our hadoop build, but that can only happen
 # once we update our apache-hadoop build to do a full maven. At which point we can probably change this to
 # like 3.0-hubspot-SNAPSHOT and leave it at that.
-MAVEN_ARGS="$VERSION_ARGS -Dgpg.skip=true -DskipTests=true"
+MAVEN_ARGS="$VERSION_ARGS -Dgpg.skip=true -DskipTests=true -DskipTest -DskipITs  -Dmaven.install.skip=false -Dmaven.repo.local=$WORKSPACE/.m2"
+
+MAVEN_ARGS="$MAVEN_ARGS -Phbase1"
 
 #
 # Validate inputs from blazar
@@ -59,9 +61,9 @@ echo "Git branch $GIT_BRANCH. Detecting appropriate version override and RPM rel
 RELEASE="hs"
 
 if [[ "$GIT_BRANCH" = "$MAIN_BRANCH" ]]; then
-    MAVEN_VERSION="${MINOR_VERSION}-hubspot-SNAPSHOT"
+    MAVEN_VERSION="${PATCH_VERSION}-hubspot-SNAPSHOT"
 elif [[ "$GIT_BRANCH" != "hubspot" ]]; then
-    MAVEN_VERSION="${MINOR_VERSION}-${GIT_BRANCH}-SNAPSHOT"
+    MAVEN_VERSION="${PATCH_VERSION}-${GIT_BRANCH}-SNAPSHOT"
     RELEASE="${RELEASE}~${GIT_BRANCH//[^[:alnum:]]/_}"
 else
     echo "Invalid git branch $GIT_BRANCH"

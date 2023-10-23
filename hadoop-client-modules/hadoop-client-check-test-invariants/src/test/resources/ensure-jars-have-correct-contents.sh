@@ -58,6 +58,8 @@ allowed_expr+="|^org.apache.hadoop.application-classloader.properties$"
 allowed_expr+="|^java.policy$"
 #   * Used by javax.annotation
 allowed_expr+="|^jndi.properties$"
+#   * HubSpot build cruft
+allowed_expr+="|^build_info"
 
 allowed_expr+=")"
 declare -i bad_artifacts=0
