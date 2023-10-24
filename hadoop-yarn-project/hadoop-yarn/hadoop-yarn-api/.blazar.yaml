@@ -16,4 +16,4 @@ before:
       - $WORKSPACE/build-scripts/prepare_environment.sh
 
 env:
-  MAVEN_ARGS: "-e"
+  MAVEN_ARGS: "-X"
