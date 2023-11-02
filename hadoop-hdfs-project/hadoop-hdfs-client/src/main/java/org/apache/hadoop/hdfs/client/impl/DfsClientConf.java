@@ -17,28 +17,6 @@
  */
 package org.apache.hadoop.hdfs.client.impl;
 
-import org.apache.hadoop.classification.VisibleForTesting;
-import org.apache.hadoop.util.Preconditions;
-import org.apache.hadoop.HadoopIllegalArgumentException;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
-import org.apache.hadoop.fs.Options.ChecksumCombineMode;
-import org.apache.hadoop.fs.Options.ChecksumOpt;
-import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.hdfs.ReplicaAccessorBuilder;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.util.ByteArrayManager;
-import org.apache.hadoop.ipc.Client;
-import org.apache.hadoop.util.DataChecksum;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.BlockWrite;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_BLOCK_SIZE_DEFAULT;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_BLOCK_SIZE_KEY;
@@ -99,6 +77,27 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Read;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Retry;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.ShortCircuit;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Write;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import org.apache.hadoop.HadoopIllegalArgumentException;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.Options.ChecksumCombineMode;
+import org.apache.hadoop.fs.Options.ChecksumOpt;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.ReplicaAccessorBuilder;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.util.ByteArrayManager;
+import org.apache.hadoop.ipc.Client;
+import org.apache.hadoop.util.DataChecksum;
+import org.apache.hadoop.util.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * DFSClient configuration.
@@ -167,6 +166,7 @@ public class DfsClientConf {
   private final boolean deadNodeDetectionEnabled;
   private final long leaseHardLimitPeriod;
   private final boolean recoverLeaseOnCloseException;
+  private final int stripedReadDnMaxAttempts;
 
   public DfsClientConf(Configuration conf) {
     // The hdfsTimeout is currently the same as the ipc timeout
@@ -321,6 +321,13 @@ public class DfsClientConf {
         Write.RECOVER_LEASE_ON_CLOSE_EXCEPTION_KEY,
         Write.RECOVER_LEASE_ON_CLOSE_EXCEPTION_DEFAULT
     );
+    stripedReadDnMaxAttempts =
+            conf.getInt(
+                    HdfsClientConfigKeys.StripedRead.DATANODE_MAX_ATTEMPTS,
+                    HdfsClientConfigKeys.StripedRead.DATANODE_MAX_ATTEMPTS_DEFAULT);
+    Preconditions.checkArgument(stripedReadDnMaxAttempts > 0, "The value of " +
+                                                              HdfsClientConfigKeys.StripedRead.DATANODE_MAX_ATTEMPTS +
+                                                              " must be greater than 0.");
   }
 
   private ByteArrayManager.Conf loadWriteByteArrayManagerConf(
@@ -701,6 +708,13 @@ public class DfsClientConf {
    */
   public boolean isDeadNodeDetectionEnabled() {
     return deadNodeDetectionEnabled;
+  }
+
+  /**
+   * @return the stripedReadDnMaxAttempts
+   */
+  public int getStripedReadDnMaxAttempts() {
+    return stripedReadDnMaxAttempts;
   }
 
   /**
