@@ -162,6 +162,7 @@ public class DfsClientConf {
 
   private final boolean deadNodeDetectionEnabled;
   private final long leaseHardLimitPeriod;
+  private final int stripedReadDnMaxAttempts;
 
   public DfsClientConf(Configuration conf) {
     // The hdfsTimeout is currently the same as the ipc timeout
@@ -304,6 +305,13 @@ public class DfsClientConf {
     Preconditions.checkArgument(clientShortCircuitNum <= 5,
             HdfsClientConfigKeys.DFS_CLIENT_SHORT_CIRCUIT_NUM +
                     "can't be more then 5.");
+    stripedReadDnMaxAttempts =
+            conf.getInt(
+                    HdfsClientConfigKeys.StripedRead.DATANODE_MAX_ATTEMPTS,
+                    HdfsClientConfigKeys.StripedRead.DATANODE_MAX_ATTEMPTS_DEFAULT);
+    Preconditions.checkArgument(stripedReadDnMaxAttempts > 0, "The value of " +
+                                                              HdfsClientConfigKeys.StripedRead.DATANODE_MAX_ATTEMPTS +
+                                                              " must be greater than 0.");
   }
 
   private ByteArrayManager.Conf loadWriteByteArrayManagerConf(
@@ -677,6 +685,13 @@ public class DfsClientConf {
    */
   public boolean isDeadNodeDetectionEnabled() {
     return deadNodeDetectionEnabled;
+  }
+
+  /**
+   * @return the stripedReadDnMaxAttempts
+   */
+  public int getStripedReadDnMaxAttempts() {
+    return stripedReadDnMaxAttempts;
   }
 
   /**
