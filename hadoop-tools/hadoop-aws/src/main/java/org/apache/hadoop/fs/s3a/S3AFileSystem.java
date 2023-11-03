@@ -277,6 +277,8 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
   private EncryptionSecrets encryptionSecrets = new EncryptionSecrets();
   /** The core instrumentation. */
   private S3AInstrumentation instrumentation;
+  private static S3AInstrumentation INSTRUMENTATION_STATIC_REFERENCE = null;
+  private static final Object INSTRUMENTATION_STATIC_REFERENCE_LOCK = new Object();
   /** Accessors to statistics for this FS. */
   private S3AStatisticsContext statisticsContext;
   /** Storage Statistics Bonded to the instrumentation. */
@@ -397,7 +399,15 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
           getServerSideEncryptionKey(bucket, getConf())));
 
       invoker = new Invoker(new S3ARetryPolicy(getConf()), onRetry);
-      instrumentation = new S3AInstrumentation(uri);
+      // S3AInstrumentation objects register themselves with the HadoopMetrics system and thus will not be garbage
+      // collected after this S3AFileSystem is. This can lead to unbounded memory growth. Making this object a singleton
+      // stops this memory leak at the expense of some correctness
+      synchronized (INSTRUMENTATION_STATIC_REFERENCE_LOCK) {
+        if (INSTRUMENTATION_STATIC_REFERENCE == null) {
+          INSTRUMENTATION_STATIC_REFERENCE = new S3AInstrumentation(getDefaultUri(conf));
+        }
+        instrumentation = INSTRUMENTATION_STATIC_REFERENCE;
+      }
       initializeStatisticsBinding();
 
       // Username is the current user at the time the FS was instantiated.
