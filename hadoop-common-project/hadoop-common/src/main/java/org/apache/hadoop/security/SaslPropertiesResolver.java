@@ -23,6 +23,7 @@ import java.util.TreeMap;
 
 import javax.security.sasl.Sasl;
 
+import com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -38,7 +39,8 @@ import org.apache.hadoop.util.StringUtils;
  *
  */
 public class SaslPropertiesResolver implements Configurable{
-  private Map<String,String> properties;
+  private ImmutableMap
+          <String,String> properties;
   Configuration conf;
 
   /**
@@ -60,7 +62,7 @@ public class SaslPropertiesResolver implements Configurable{
   @Override
   public void setConf(Configuration conf) {
     this.conf = conf;
-    properties = new TreeMap<String,String>();
+    ImmutableMap.Builder<String, String> propertiesBuilder = ImmutableMap.builder();
     String[] qop = conf.getTrimmedStrings(
         CommonConfigurationKeysPublic.HADOOP_RPC_PROTECTION,
         QualityOfProtection.AUTHENTICATION.toString());
@@ -68,8 +70,9 @@ public class SaslPropertiesResolver implements Configurable{
       qop[i] = QualityOfProtection.valueOf(
           StringUtils.toUpperCase(qop[i])).getSaslQop();
     }
-    properties.put(Sasl.QOP, StringUtils.join(",", qop));
-    properties.put(Sasl.SERVER_AUTH, "true");
+    propertiesBuilder.put(Sasl.QOP, StringUtils.join(",", qop));
+    propertiesBuilder.put(Sasl.SERVER_AUTH, "true");
+    properties = propertiesBuilder.build();
   }
 
   @Override

@@ -21,6 +21,7 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSF
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY;
 import static org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil.*;
 
+import com.google.common.collect.Maps;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
@@ -301,8 +302,8 @@ public class SaslDataTransferServer {
     SaslPropertiesResolver saslPropsResolver = dnConf.getSaslPropsResolver();
     Map<String, String> saslProps;
     if (saslPropsResolver != null) {
-      saslProps = saslPropsResolver.getServerProperties(
-              getPeerAddress(peer));
+      saslProps = Maps.newHashMap(saslPropsResolver.getServerProperties(
+              getPeerAddress(peer)));
     } else if (dnConf.getDataTransferAcceptSasl()) {
       // This code path provides a way to accept SASL connections even we don't make them.
       // dnConf.getSaslPropsResolver() is non-null only if dfs.data.transfer.protection is set.

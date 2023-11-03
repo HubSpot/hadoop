@@ -21,6 +21,7 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_ENCRYPT_DAT
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_NEW_QOP_KEY;
 import static org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil.*;
 
+import com.google.common.collect.Maps;
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -420,7 +421,7 @@ public class SaslDataTransferClient {
       Token<BlockTokenIdentifier> accessToken,
       SecretKey secretKey)
       throws IOException {
-    Map<String, String> saslProps = saslPropsResolver.getClientProperties(addr);
+    Map<String, String> saslProps = Maps.newHashMap(saslPropsResolver.getClientProperties(addr));
 
     // secretKey != null only happens when this is called by DN
     // sending to downstream DN. If called from client, this will be null,
