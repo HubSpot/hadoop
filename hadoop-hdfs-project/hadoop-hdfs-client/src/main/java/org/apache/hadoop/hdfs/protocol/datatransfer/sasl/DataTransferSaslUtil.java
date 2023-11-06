@@ -139,18 +139,6 @@ public final class DataTransferSaslUtil {
     return saslProps;
   }
 
-  public static Map<String, String> unsafeCreateSaslPropertiesForGeneralHandshake(
-          String encryptionAlgorithm) {
-    Map<String, String> saslProps = Maps.newHashMapWithExpectedSize(3);
-    saslProps.put(Sasl.QOP, String.format("%s,%s,%s",
-            QualityOfProtection.PRIVACY.getSaslQop(),
-            QualityOfProtection.INTEGRITY.getSaslQop(),
-            QualityOfProtection.AUTHENTICATION.getSaslQop()));
-    saslProps.put(Sasl.SERVER_AUTH, "true");
-    saslProps.put("com.sun.security.sasl.digest.cipher", encryptionAlgorithm);
-    return saslProps;
-  }
-
   /**
    * For an encrypted SASL negotiation, encodes an encryption key to a SASL
    * password.

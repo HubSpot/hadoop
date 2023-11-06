@@ -132,7 +132,7 @@ public class SaslDataTransferServer {
         "SASL server skipping handshake in secured configuration for "
         + "peer = {}, datanodeId = {}", peer, datanodeId);
       return new IOStreamPair(underlyingIn, underlyingOut);
-    } else if (dnConf.getSaslPropsResolver() != null || dnConf.getDataTransferAcceptSasl()) {
+    } else if (dnConf.getSaslPropsResolver() != null) {
       LOG.debug(
         "SASL server doing general handshake for peer = {}, datanodeId = {}",
         peer, datanodeId);
@@ -303,10 +303,6 @@ public class SaslDataTransferServer {
     if (saslPropsResolver != null) {
       saslProps = saslPropsResolver.getServerProperties(
               getPeerAddress(peer));
-    } else if (dnConf.getDataTransferAcceptSasl()) {
-      // This code path provides a way to accept SASL connections even we don't make them.
-      // dnConf.getSaslPropsResolver() is non-null only if dfs.data.transfer.protection is set.
-      saslProps = unsafeCreateSaslPropertiesForGeneralHandshake(dnConf.getEncryptionAlgorithm());
     } else {
       saslProps = null;
     }
@@ -378,31 +374,13 @@ public class SaslDataTransferServer {
       InputStream underlyingIn, @Nullable Map<String, String> saslProps,
       CallbackHandler callbackHandler) throws IOException {
 
-    DataInputStream in;
-    if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
-      BufferedInputStream bufferedIn = new BufferedInputStream(underlyingIn);
-      in = new DataInputStream(bufferedIn);
-    } else {
-      in = new DataInputStream(underlyingIn);
-    }
+    DataInputStream in = new DataInputStream(underlyingIn);
     DataOutputStream out = new DataOutputStream(underlyingOut);
 
-    if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
-      in.mark(4);
-    }
     int magicNumber = in.readInt();
     if (magicNumber != SASL_TRANSFER_MAGIC_NUMBER) {
-      if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
-        LOG.info("A SASL handshake was attempted with peer {}, but the magic number {} was not seen. " +
-                        "Because {} is true, skipping handshake and using plaintext connection.",
-                peer, String.format("0x%X", SASL_TRANSFER_MAGIC_NUMBER),
-                DFSConfigKeys.UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_KEY);
-        in.reset();
-        return new IOStreamPair(in, out);
-      } else {
         throw new InvalidMagicNumberException(magicNumber,
-                dnConf.getDataTransferAcceptSasl());
-      }
+                dnConf.getEncryptDataTransfer());
     }
 
     if (saslProps == null) {
