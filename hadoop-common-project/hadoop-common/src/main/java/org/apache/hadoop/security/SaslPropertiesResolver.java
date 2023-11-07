@@ -19,11 +19,11 @@ package org.apache.hadoop.security;
 
 import java.net.InetAddress;
 import java.util.Map;
+import java.util.SortedMap;
 import java.util.TreeMap;
 
 import javax.security.sasl.Sasl;
 
-import com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -39,8 +39,7 @@ import org.apache.hadoop.util.StringUtils;
  *
  */
 public class SaslPropertiesResolver implements Configurable{
-  private ImmutableMap
-          <String,String> properties;
+  private SortedMap<String,String> properties;
   Configuration conf;
 
   /**
@@ -62,7 +61,7 @@ public class SaslPropertiesResolver implements Configurable{
   @Override
   public void setConf(Configuration conf) {
     this.conf = conf;
-    ImmutableMap.Builder<String, String> propertiesBuilder = ImmutableMap.builder();
+    properties = new TreeMap<String,String>();
     String[] qop = conf.getTrimmedStrings(
         CommonConfigurationKeysPublic.HADOOP_RPC_PROTECTION,
         QualityOfProtection.AUTHENTICATION.toString());
@@ -70,9 +69,8 @@ public class SaslPropertiesResolver implements Configurable{
       qop[i] = QualityOfProtection.valueOf(
           StringUtils.toUpperCase(qop[i])).getSaslQop();
     }
-    propertiesBuilder.put(Sasl.QOP, StringUtils.join(",", qop));
-    propertiesBuilder.put(Sasl.SERVER_AUTH, "true");
-    properties = propertiesBuilder.build();
+    properties.put(Sasl.QOP, StringUtils.join(",", qop));
+    properties.put(Sasl.SERVER_AUTH, "true");
   }
 
   @Override
@@ -85,7 +83,7 @@ public class SaslPropertiesResolver implements Configurable{
    * @return sasl Properties
    */
   public Map<String,String> getDefaultProperties() {
-    return properties;
+    return new TreeMap<>(properties);
   }
 
   /**
@@ -94,7 +92,7 @@ public class SaslPropertiesResolver implements Configurable{
    * @return the sasl properties to be used for the connection.
    */
   public Map<String, String> getServerProperties(InetAddress clientAddress){
-    return properties;
+    return new TreeMap<>(properties);
   }
 
   /**
@@ -114,7 +112,7 @@ public class SaslPropertiesResolver implements Configurable{
    * @return the sasl properties to be used for the connection.
    */
   public Map<String, String> getClientProperties(InetAddress serverAddress){
-    return properties;
+    return new TreeMap<>(properties);
   }
 
   /**
