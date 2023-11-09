@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_BLOCK_ACCESS_TOKEN_UNSAFE_ALLOWED_NOT_REQUIRED_KEY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -378,7 +379,7 @@ public class TestBlockTokenWithDFS {
     // Namenodes will start up without access tokens, but DN's will be prepared to ignore
     // them if they receive them.
     //
-    conf.setBoolean("dfs.block.access.token.migration.enabled", true);
+    conf.setBoolean(DFS_DATANODE_BLOCK_ACCESS_TOKEN_UNSAFE_ALLOWED_NOT_REQUIRED_KEY, true);
     conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, false);
 
     try {
@@ -414,7 +415,7 @@ public class TestBlockTokenWithDFS {
       // they will register and get the block access tokens and use them going forward.
       //
 
-      conf.setBoolean("dfs.block.access.token.migration.enabled", false);
+      conf.setBoolean(DFS_DATANODE_BLOCK_ACCESS_TOKEN_UNSAFE_ALLOWED_NOT_REQUIRED_KEY, false);
       for (int idx = 0; idx < cluster.getDataNodes().size(); idx++) {
         cluster.stopDataNode(idx);
       }
@@ -707,7 +708,6 @@ public class TestBlockTokenWithDFS {
     assertTrue(checkFile1(in2,expected));
     // verify fetchBlockByteRange() is able to re-fetch token transparently
     assertTrue(checkFile2(in3,expected));
-
   }
   /**
    * Integration testing of access token, involving NN, DN, and Balancer

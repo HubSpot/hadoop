@@ -3315,9 +3315,9 @@ public abstract class Server {
   }
 
   private boolean isTokenMigrationModeEnabled(Configuration conf) {
-    return conf.getBoolean("dfs.block.access.token.migration.enabled", false);
+    return conf.getBoolean("dfs.datanode.block.access.token.unsafe.allowed-not-required", false);
   }
-  
+
   private void closeConnection(Connection connection) {
     connectionManager.close(connection);
   }

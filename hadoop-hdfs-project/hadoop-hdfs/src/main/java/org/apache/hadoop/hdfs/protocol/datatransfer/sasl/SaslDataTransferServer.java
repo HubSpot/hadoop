@@ -23,6 +23,7 @@ import static org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSasl
 
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_UNSAFE_SASL_ALLOWED_NOT_REQUIRED_KEY;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
@@ -80,7 +81,8 @@ import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 @InterfaceAudience.Private
 public class SaslDataTransferServer {
 
-  private static final Logger LOG = LoggerFactory.getLogger(
+  @VisibleForTesting
+  static final Logger LOG = LoggerFactory.getLogger(
     SaslDataTransferServer.class);
 
   private final BlockPoolTokenSecretManager blockPoolTokenSecretManager;
@@ -132,7 +134,7 @@ public class SaslDataTransferServer {
         "SASL server skipping handshake in secured configuration for "
         + "peer = {}, datanodeId = {}", peer, datanodeId);
       return new IOStreamPair(underlyingIn, underlyingOut);
-    } else if (dnConf.getSaslPropsResolver() != null || dnConf.getDataTransferAcceptSasl()) {
+    } else if (dnConf.getSaslPropsResolver() != null || dnConf.getUnsafeAcceptSasl()) {
       LOG.debug(
         "SASL server doing general handshake for peer = {}, datanodeId = {}",
         peer, datanodeId);
@@ -303,10 +305,10 @@ public class SaslDataTransferServer {
     if (saslPropsResolver != null) {
       saslProps = saslPropsResolver.getServerProperties(
               getPeerAddress(peer));
-    } else if (dnConf.getDataTransferAcceptSasl()) {
-      // This code path provides a way to accept SASL connections even we don't make them.
-      // dnConf.getSaslPropsResolver() is non-null only if dfs.data.transfer.protection is set.
-      saslProps = unsafeCreateSaslPropertiesForGeneralHandshake(dnConf.getEncryptionAlgorithm());
+    } else if (dnConf.getUnsafeAcceptSasl()) {
+      // This path provides a way to accept encrypted connections even we don't make them.
+      // In this mode, all QOPs are accepted.
+      saslProps = createSaslPropertiesAllQops(dnConf.getEncryptionAlgorithm());
     } else {
       saslProps = null;
     }
@@ -379,9 +381,12 @@ public class SaslDataTransferServer {
       CallbackHandler callbackHandler) throws IOException {
 
     DataInputStream in;
-    if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
+    if (dnConf.getUnsafeAcceptSasl()) {
+      // If requested by configuration, create an InputStream with the ability to back up and replay at
+      // least the first four bytes if they are not found to be a magic number.
       BufferedInputStream bufferedIn = new BufferedInputStream(underlyingIn);
       in = new DataInputStream(bufferedIn);
+      in.mark(4);
     } else {
       in = new DataInputStream(underlyingIn);
     }
@@ -392,22 +397,25 @@ public class SaslDataTransferServer {
     }
     int magicNumber = in.readInt();
     if (magicNumber != SASL_TRANSFER_MAGIC_NUMBER) {
-      if (dnConf.getUnsafeDataTransferPlaintextFallback()) {
-        LOG.info("A SASL handshake was attempted with peer {}, but the magic number {} was not seen. " +
+      if (dnConf.getUnsafeAcceptSasl()) {
+        // If the first four bytes sent to us did not indicate the start of a SASL handshake, and configuration allows,
+        // process those bytes and the remainder as a plaintext payload.
+        LOG.warn("A SASL handshake was attempted with peer {}, but the magic number {} was not seen. " +
                         "Because {} is true, skipping handshake and using plaintext connection.",
                 peer, String.format("0x%X", SASL_TRANSFER_MAGIC_NUMBER),
-                DFSConfigKeys.UNSAFE_DFS_DATA_TRANSFER_PLAINTEXT_FALLBACK_KEY);
+            DFS_DATANODE_UNSAFE_SASL_ALLOWED_NOT_REQUIRED_KEY);
         in.reset();
         return new IOStreamPair(in, out);
       } else {
         throw new InvalidMagicNumberException(magicNumber,
-                dnConf.getDataTransferAcceptSasl());
+                dnConf.getEncryptDataTransfer());
       }
     }
 
     if (saslProps == null) {
-      throw new IllegalStateException("No SASL properties set, have you forgotten to set dfs.data.transfer.protection " +
-              "and/or dfs.data.transfer.accept.sasl?");
+      throw new IllegalStateException(String.format("No SASL properties set, have you forgotten to set %s " +
+              "and/or %s?", DFS_DATA_TRANSFER_PROTECTION_KEY,
+          DFS_DATANODE_UNSAFE_SASL_ALLOWED_NOT_REQUIRED_KEY));
     }
 
     try {

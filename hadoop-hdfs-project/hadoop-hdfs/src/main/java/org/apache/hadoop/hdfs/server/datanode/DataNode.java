@@ -33,6 +33,8 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_SPLIT_THRESHO
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_ADDRESS_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_ADDRESS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_BLOCK_ACCESS_TOKEN_UNSAFE_ALLOWED_NOT_REQUIRED_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_BLOCK_ACCESS_TOKEN_UNSAFE_ALLOWED_NOT_REQUIRED_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_KEY;
@@ -1911,8 +1913,9 @@ public class DataNode extends ReconfigurableBase
   private synchronized void registerBlockPoolWithSecretManager(
       DatanodeRegistration bpRegistration, String blockPoolId) throws IOException {
     ExportedBlockKeys keys = bpRegistration.getExportedKeys();
-    if (getConf().getBoolean("dfs.block.access.token.migration.enabled", false)) {
-      LOG.info("Block access token migration enabled - ignoring blockTokenEnabled={} value from NameNode", keys.isBlockTokenEnabled());
+    if (getConf().getBoolean(DFS_DATANODE_BLOCK_ACCESS_TOKEN_UNSAFE_ALLOWED_NOT_REQUIRED_KEY,
+        DFS_DATANODE_BLOCK_ACCESS_TOKEN_UNSAFE_ALLOWED_NOT_REQUIRED_DEFAULT)) {
+      LOG.info("Block access token migration enabled - ignoring blockTokenEnabled=" + keys.isBlockTokenEnabled() + " value from NameNode");
       return;
     }
     if (!hasAnyBlockPoolRegistered) {
