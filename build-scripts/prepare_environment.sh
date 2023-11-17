@@ -77,7 +77,7 @@ MAVEN_ARGS="$MAVEN_ARGS -Dhadoop.version=$MAVEN_VERSION"
 # Dump generated env vars into rc file
 #
 
-cat >> "$BUILD_COMMAND_RC_FILE" <<EOF
+cat >> "$PRIVILEGED_BUILD_COMMAND_RC_FILE" <<EOF
 export MAVEN_ARGS='$MAVEN_ARGS'
 export SET_VERSION='$MAVEN_VERSION'
 export HADOOP_VERSION='HADOOP_VERSION'
