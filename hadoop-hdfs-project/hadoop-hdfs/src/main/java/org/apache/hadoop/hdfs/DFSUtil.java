@@ -1905,7 +1905,7 @@ public class DFSUtil {
     if (read >= 0 && duration > 0) {
         metrics.addReadTransferRate(read * 1000 / duration);
     } else {
-      LOG.warn("Unexpected value for data transfer bytes={} duration={}", read, duration);
+      LOG.debug("Unexpected value for data transfer bytes={} duration={}", read, duration);
     }
   }
 }
