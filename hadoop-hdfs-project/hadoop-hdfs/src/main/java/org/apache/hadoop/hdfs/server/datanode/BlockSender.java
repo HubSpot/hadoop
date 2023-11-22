@@ -121,6 +121,7 @@ class BlockSender implements java.io.Closeable {
   
   /** the block to read from */
   private final ExtendedBlock block;
+  private final long requestedLength;
 
   /** InputStreams and file descriptors to read block/checksum. */
   private ReplicaInputStreams ris;
@@ -204,6 +205,7 @@ class BlockSender implements java.io.Closeable {
               boolean sendChecksum, DataNode datanode, String clientTraceFmt,
               CachingStrategy cachingStrategy)
       throws IOException {
+    this.requestedLength = length;
     InputStream blockIn = null;
     DataInputStream checksumIn = null;
     FsVolumeReference volumeRef = null;
@@ -836,7 +838,7 @@ class BlockSender implements java.io.Closeable {
       if ((clientTraceFmt != null) && ClientTraceLog.isDebugEnabled()) {
         final long endTime = System.nanoTime();
         ClientTraceLog.debug(String.format(clientTraceFmt, totalRead,
-            initialOffset, endTime - startTime));
+            initialOffset, endTime - startTime) + "; requestedBytes=" + requestedLength);
       }
       close();
     }
@@ -857,6 +859,9 @@ class BlockSender implements java.io.Closeable {
     // Perform readahead if necessary
     if ((readaheadLength > 0) && (datanode.readaheadPool != null) &&
           (alwaysReadahead || isLongRead())) {
+      if (ClientTraceLog.isDebugEnabled()) {
+        ClientTraceLog.debug("Reading ahead " + readaheadLength + " bytes for block " + block.getBlockName());
+      }
       curReadahead = datanode.readaheadPool.readaheadStream(
           clientTraceFmt, ris.getDataInFd(), offset, readaheadLength,
           Long.MAX_VALUE, curReadahead);
