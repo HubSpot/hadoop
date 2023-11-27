@@ -592,10 +592,10 @@ class BlockSender implements java.io.Closeable {
     }
     
     int dataOff = checksumOff + checksumDataLen;
-    pkt.position(dataOff).limit(dataLen);
+    pkt.position(dataOff);
     if (!transferTo) { // normal transfer
       try {
-        ris.readDataFully(pkt);
+        ris.readDataFully(pkt.slice().limit(dataLen));
       } catch (IOException ioe) {
         if (ioe.getMessage().startsWith(EIO_ERROR)) {
           throw new DiskFileCorruptException("A disk IO error occurred", ioe);
@@ -612,7 +612,7 @@ class BlockSender implements java.io.Closeable {
       if (transferTo) {
         SocketOutputStream sockOut = (SocketOutputStream)out;
         // First write header and checksums
-        pkt.position(headerOff).limit(dataOff - headerOff);
+        pkt = pkt.position(headerOff).slice().limit(dataOff - headerOff);
         while (pkt.hasRemaining()) {
           sockOut.write(pkt.get());
         }
@@ -629,7 +629,7 @@ class BlockSender implements java.io.Closeable {
         blockInPosition += dataLen;
       } else {
         // normal transfer
-        pkt.position(headerOff).limit(dataOff + dataLen - headerOff);
+        pkt = pkt.position(headerOff).slice().limit(dataOff + dataLen - headerOff);
         while (pkt.hasRemaining()) {
           out.write(pkt.get());
         }
@@ -698,7 +698,7 @@ class BlockSender implements java.io.Closeable {
     if (checksumSize <= 0 && ris.getChecksumIn() == null) {
       return;
     }
-    pkt.position(checksumOffset).limit(checksumLen);
+    pkt = pkt.position(checksumOffset).slice().limit(checksumLen);
     try {
       ris.readChecksumFully(pkt);
     } catch (IOException e) {
@@ -707,7 +707,7 @@ class BlockSender implements java.io.Closeable {
       ris.closeChecksumStream();
       if (corruptChecksumOk) {
         if (checksumLen > 0) {
-          pkt.position(checksumOffset);
+          pkt.rewind();
           // Just fill the array with zeros.
           while(pkt.hasRemaining()) {
             pkt.put((byte) 0);
@@ -928,7 +928,7 @@ class BlockSender implements java.io.Closeable {
    * return the length of the header written.
    */
   private int writePacketHeader(ByteBuffer pkt, int dataLen, int packetLen) {
-    pkt.clear();
+    pkt.clear().limit(packetLen);
     // both syncBlock and syncPacket are false
     PacketHeader header = new PacketHeader(packetLen, offset, seqno,
         (dataLen == 0), dataLen, false);
