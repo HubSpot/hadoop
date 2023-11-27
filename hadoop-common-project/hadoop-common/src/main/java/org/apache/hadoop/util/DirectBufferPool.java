@@ -23,11 +23,15 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A simple class for pooling direct ByteBuffers. This is necessary
@@ -44,11 +48,41 @@ import org.apache.hadoop.classification.InterfaceStability;
 @InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce"})
 @InterfaceStability.Evolving
 public class DirectBufferPool {
+  private static final Logger LOG = LoggerFactory.getLogger(DirectBufferPool.class);
 
   // Essentially implement a multimap with weak values.
   final ConcurrentMap<Integer, Queue<WeakReference<ByteBuffer>>> buffersBySize =
     new ConcurrentHashMap<Integer, Queue<WeakReference<ByteBuffer>>>();
- 
+
+  private static final int BUCKET_SIZES[] =
+          { 4 * 1024 + 1024, 8 * 1024 + 1024, 16 * 1024 + 1024, 32 * 1024 + 1024, 40 * 1024 + 1024,
+                  48 * 1024 + 1024, 56 * 1024 + 1024, 64 * 1024 + 1024, 96 * 1024 + 1024, 128 * 1024 + 1024,
+                  192 * 1024 + 1024, 256 * 1024 + 1024, 384 * 1024 + 1024, 512 * 1024 + 1024 };
+
+  private final AtomicInteger numAllocations = new AtomicInteger(0);
+  private static final int LOG_EVERY = 1000;
+
+  public ByteBuffer getAlignedBuffer(int size) {
+    int alignedSize = getAlignedSize(size);
+    ByteBuffer buffer = getBuffer(alignedSize);
+    buffer.limit(size);
+    if (LOG.isDebugEnabled() && numAllocations.incrementAndGet() % LOG_EVERY == 0) {
+      LOG.debug("Current pool stats = {}", buffersBySize.entrySet().stream()
+              .map(entry -> entry.getKey() + "=>[" + entry.getValue().size() + "]")
+              .collect(Collectors.joining(", ")));
+    }
+    return buffer;
+  }
+
+  private int getAlignedSize(int size) {
+    for (int i = 0; i < BUCKET_SIZES.length; i++) {
+      int bucketSize = BUCKET_SIZES[i];
+      if (bucketSize > size) {
+        return bucketSize;
+      }
+    }
+    return size;
+  }
   /**
    * Allocate a direct buffer of the specified size, in bytes.
    * If a pooled buffer is available, returns that. Otherwise

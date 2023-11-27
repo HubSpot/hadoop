@@ -58,6 +58,7 @@ import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.POSIX_FADV_SEQUENTIAL
 
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.DirectBufferPool;
 import org.slf4j.Logger;
 
 /**
@@ -118,6 +119,7 @@ class BlockSender implements java.io.Closeable {
   }
   private static final int TRANSFERTO_BUFFER_SIZE = Math.max(
       IO_FILE_BUFFER_SIZE, MIN_BUFFER_WITH_TRANSFERTO);
+  private static final DirectBufferPool POOL = new DirectBufferPool();
   
   /** the block to read from */
   private final ExtendedBlock block;
@@ -789,6 +791,7 @@ class BlockSender implements java.io.Closeable {
     manageOsCache();
 
     final long startTime = ClientTraceLog.isDebugEnabled() ? System.nanoTime() : 0;
+    ByteBuffer pktBuf = null;
     try {
       int maxChunksPerPacket;
       int pktBufSize = PacketHeader.PKT_MAX_HEADER_LEN;
@@ -809,9 +812,16 @@ class BlockSender implements java.io.Closeable {
             numberOfChunks(IO_FILE_BUFFER_SIZE));
         // Packet size includes both checksum and data
         pktBufSize += (chunkSize + checksumSize) * maxChunksPerPacket;
+        if (LOG.isDebugEnabled()) {
+          LOG.debug(
+                  "Not transferTo: transferToAllowed={}, verifyChecksum={}, baseStreamIsSocketOut={} ({}), dataInIsFile={} ({}), maxChunksPerPacket={}, pktBufSize={}",
+                  transferToAllowed, verifyChecksum, baseStream instanceof SocketOutputStream,
+                  baseStream.getClass().getSimpleName(),
+                  ris.getDataIn() instanceof FileInputStream, ris.getDataIn().getClass().getSimpleName(), maxChunksPerPacket, pktBufSize);
+        }
       }
 
-      ByteBuffer pktBuf = ByteBuffer.allocate(pktBufSize);
+      pktBuf = POOL.getAlignedBuffer(pktBufSize);
 
       while (endOffset > offset && !Thread.currentThread().isInterrupted()) {
         manageOsCache();
@@ -835,6 +845,9 @@ class BlockSender implements java.io.Closeable {
         sentEntireByteRange = true;
       }
     } finally {
+      if (pktBuf != null) {
+        POOL.returnBuffer(pktBuf);
+      }
       if ((clientTraceFmt != null) && ClientTraceLog.isDebugEnabled()) {
         final long endTime = System.nanoTime();
         ClientTraceLog.debug(String.format(clientTraceFmt, totalRead,
