@@ -75,12 +75,11 @@ public class DirectBufferPool {
   }
 
   private int getAlignedSize(int size) {
-    for (int i = 0; i < BUCKET_SIZES.length; i++) {
-      int bucketSize = BUCKET_SIZES[i];
-      if (bucketSize > size) {
-        return bucketSize;
+      for (int bucketSize : BUCKET_SIZES) {
+          if (bucketSize >= size) {
+              return bucketSize;
+          }
       }
-    }
     return size;
   }
   /**
