@@ -312,6 +312,14 @@ public class DataChecksum implements Checksum {
      }
      return type.size == 0;
    }
+
+   public boolean compare(ByteBuffer buf, int offset) {
+     if (type.size == 4) {
+       int checkSum = buf.getInt(offset);
+       return checkSum == (int) summer.getValue();
+     }
+     return type.size == 0;
+   }
    
   private final Type type;
   private final Checksum summer;

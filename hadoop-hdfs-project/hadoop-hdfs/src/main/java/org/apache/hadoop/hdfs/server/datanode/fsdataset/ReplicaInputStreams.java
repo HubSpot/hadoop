@@ -22,6 +22,7 @@ import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.FileIoProvider;
@@ -80,9 +81,17 @@ public class ReplicaInputStreams implements Closeable {
     return volumeRef;
   }
 
+  public void readDataFully(ByteBuffer buffer) throws IOException {
+    IOUtils.readFully(dataIn, buffer);
+  }
   public void readDataFully(byte[] buf, int off, int len)
       throws IOException {
     IOUtils.readFully(dataIn, buf, off, len);
+  }
+
+  public void readChecksumFully(ByteBuffer buf)
+          throws IOException {
+    IOUtils.readFully(checksumIn, buf);
   }
 
   public void readChecksumFully(byte[] buf, int off, int len)

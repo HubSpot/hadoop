@@ -576,25 +576,26 @@ class BlockSender implements java.io.Closeable {
     int headerOff = pkt.position() - headerLen;
     
     int checksumOff = pkt.position();
-    byte[] buf = pkt.array();
-    
+
     if (checksumSize > 0 && ris.getChecksumIn() != null) {
-      readChecksum(buf, checksumOff, checksumDataLen);
+      readChecksum(pkt, checksumOff, checksumDataLen);
 
       // write in progress that we need to use to get last checksum
       if (lastDataPacket && lastChunkChecksum != null) {
         int start = checksumOff + checksumDataLen - checksumSize;
         byte[] updatedChecksum = lastChunkChecksum.getChecksum();
         if (updatedChecksum != null) {
-          System.arraycopy(updatedChecksum, 0, buf, start, checksumSize);
+          pkt.position(start);
+          pkt.put(updatedChecksum, 0, checksumSize);
         }
       }
     }
     
     int dataOff = checksumOff + checksumDataLen;
+    pkt.position(dataOff).limit(dataLen);
     if (!transferTo) { // normal transfer
       try {
-        ris.readDataFully(buf, dataOff, dataLen);
+        ris.readDataFully(pkt);
       } catch (IOException ioe) {
         if (ioe.getMessage().startsWith(EIO_ERROR)) {
           throw new DiskFileCorruptException("A disk IO error occurred", ioe);
@@ -603,7 +604,7 @@ class BlockSender implements java.io.Closeable {
       }
 
       if (verifyChecksum) {
-        verifyChecksum(buf, dataOff, dataLen, numChunks, checksumOff);
+        verifyChecksum(pkt, dataOff, dataLen, numChunks, checksumOff);
       }
     }
     
@@ -611,7 +612,10 @@ class BlockSender implements java.io.Closeable {
       if (transferTo) {
         SocketOutputStream sockOut = (SocketOutputStream)out;
         // First write header and checksums
-        sockOut.write(buf, headerOff, dataOff - headerOff);
+        pkt.position(headerOff).limit(dataOff - headerOff);
+        while (pkt.hasRemaining()) {
+          sockOut.write(pkt.get());
+        }
 
         // no need to flush since we know out is not a buffered stream
         FileChannel fileCh = ((FileInputStream)ris.getDataIn()).getChannel();
@@ -625,7 +629,10 @@ class BlockSender implements java.io.Closeable {
         blockInPosition += dataLen;
       } else {
         // normal transfer
-        out.write(buf, headerOff, dataOff + dataLen - headerOff);
+        pkt.position(headerOff).limit(dataOff + dataLen - headerOff);
+        while (pkt.hasRemaining()) {
+          out.write(pkt.get());
+        }
       }
     } catch (IOException e) {
       if (e instanceof SocketTimeoutException) {
@@ -681,27 +688,30 @@ class BlockSender implements java.io.Closeable {
   
   /**
    * Read checksum into given buffer
-   * @param buf buffer to read the checksum into
+   * @param pkt buffer to read the checksum into
    * @param checksumOffset offset at which to write the checksum into buf
    * @param checksumLen length of checksum to write
    * @throws IOException on error
    */
-  private void readChecksum(byte[] buf, final int checksumOffset,
+  private void readChecksum(ByteBuffer pkt, final int checksumOffset,
       final int checksumLen) throws IOException {
     if (checksumSize <= 0 && ris.getChecksumIn() == null) {
       return;
     }
+    pkt.position(checksumOffset).limit(checksumLen);
     try {
-      ris.readChecksumFully(buf, checksumOffset, checksumLen);
+      ris.readChecksumFully(pkt);
     } catch (IOException e) {
       LOG.warn(" Could not read or failed to verify checksum for data"
           + " at offset " + offset + " for block " + block, e);
       ris.closeChecksumStream();
       if (corruptChecksumOk) {
         if (checksumLen > 0) {
+          pkt.position(checksumOffset);
           // Just fill the array with zeros.
-          Arrays.fill(buf, checksumOffset, checksumOffset + checksumLen,
-              (byte) 0);
+          while(pkt.hasRemaining()) {
+            pkt.put((byte) 0);
+          }
         }
       } else {
         throw e;
@@ -720,17 +730,21 @@ class BlockSender implements java.io.Closeable {
    * @param checksumOffset offset where checksum is written in the buf
    * @throws ChecksumException on failed checksum verification
    */
-  public void verifyChecksum(final byte[] buf, final int dataOffset,
+  public void verifyChecksum(ByteBuffer buf, final int dataOffset,
       final int datalen, final int numChunks, final int checksumOffset)
       throws ChecksumException {
     int dOff = dataOffset;
     int cOff = checksumOffset;
     int dLeft = datalen;
 
+    buf.position(dOff);
+
     for (int i = 0; i < numChunks; i++) {
       checksum.reset();
       int dLen = Math.min(dLeft, chunkSize);
-      checksum.update(buf, dOff, dLen);
+      for (int j = 0; j < dLen; j++) {
+        checksum.update(buf.get());
+      }
       if (!checksum.compare(buf, cOff)) {
         long failedPos = offset + datalen - dLeft;
         StringBuilder replicaInfoString = new StringBuilder();
@@ -741,7 +755,6 @@ class BlockSender implements java.io.Closeable {
             + replicaInfoString, failedPos);
       }
       dLeft -= dLen;
-      dOff += dLen;
       cOff += checksumSize;
     }
   }

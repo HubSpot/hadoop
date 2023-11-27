@@ -220,6 +220,16 @@ public class IOUtils {
       off += ret;
     }
   }
+
+  public static void readFully(InputStream in, ByteBuffer out) throws IOException {
+    while (out.hasRemaining()) {
+      int ret = in.read();
+      if (ret < 0) {
+        throw new IOException( "Premature EOF from inputStream");
+      }
+      out.put((byte)ret);
+    }
+  }
   
   /**
    * Similar to readFully(). Skips bytes in a loop.
