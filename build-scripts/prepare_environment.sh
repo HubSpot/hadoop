@@ -75,18 +75,10 @@ FULL_BUILD_VERSION="${HADOOP_VERSION}-${RELEASE}"
 
 MAVEN_ARGS="$MAVEN_ARGS -Dhadoop.version=$MAVEN_VERSION"
 
-#
-# Dump generated env vars into rc file
-#
+write-build-env-var MAVEN_ARGS "$MAVEN_ARGS"
+write-build-env-var SET_VERSION "$MAVEN_VERSION"
+write-build-env-var PKG_RELEASE "$RELEASE"
+write-build-env-var FULL_BUILD_VERSION "$FULL_BUILD_VERSION"
 
-cat >> "$BUILD_COMMAND_RC_FILE" <<EOF
-export MAVEN_ARGS='$MAVEN_ARGS'
-export SET_VERSION='$MAVEN_VERSION'
-export HADOOP_VERSION='HADOOP_VERSION'
-export PKG_RELEASE='$RELEASE'
-export FULL_BUILD_VERSION='$FULL_BUILD_VERSION'
-EOF
-
-echo "Building Hadoop version $HADOOP_VERSION"
 echo "Will use maven version $MAVEN_VERSION"
 echo "Will run maven with extra args $MAVEN_ARGS"
