@@ -2057,6 +2057,7 @@ public class UserGroupInformation {
   // context for relogin.  explicitly private to prevent external tampering.
   private static class HadoopLoginContext extends LoginContext {
     private final String appName;
+    private final Subject subject;
     private final HadoopConfiguration conf;
     private AtomicBoolean isLoggedIn = new AtomicBoolean();
 
@@ -2064,6 +2065,7 @@ public class UserGroupInformation {
                        HadoopConfiguration conf) throws LoginException {
       super(appName, subject, null, conf);
       this.appName = appName;
+      this.subject = subject;
       this.conf = conf;
     }
 
@@ -2090,6 +2092,9 @@ public class UserGroupInformation {
         MutableRate metric = metrics.loginFailure;
         long start = Time.monotonicNow();
         try {
+          if (subject == null) {
+            LOG.info("Creating new subject", new RuntimeException());
+          }
           super.login();
           isLoggedIn.set(true);
           metric = metrics.loginSuccess;
