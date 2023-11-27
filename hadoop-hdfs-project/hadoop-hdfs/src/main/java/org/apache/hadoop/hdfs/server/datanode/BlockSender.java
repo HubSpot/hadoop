@@ -838,7 +838,7 @@ class BlockSender implements java.io.Closeable {
 
       while (endOffset > offset && !Thread.currentThread().isInterrupted()) {
         manageOsCache();
-        long len = sendPacket(pktBuf, maxChunksPerPacket, streamForSendChunks,
+        long len = sendPacket(pktBuf.rewind().slice(), maxChunksPerPacket, streamForSendChunks,
             transferTo, throttler);
         offset += len;
         totalRead += len + (numberOfChunks(len) * checksumSize);
@@ -848,7 +848,7 @@ class BlockSender implements java.io.Closeable {
       if (!Thread.currentThread().isInterrupted()) {
         try {
           // send an empty packet to mark the end of the block
-          sendPacket(pktBuf, maxChunksPerPacket, streamForSendChunks, transferTo,
+          sendPacket(pktBuf.rewind(), maxChunksPerPacket, streamForSendChunks, transferTo,
               throttler);
           out.flush();
         } catch (IOException e) { //socket error
@@ -928,7 +928,6 @@ class BlockSender implements java.io.Closeable {
    * return the length of the header written.
    */
   private int writePacketHeader(ByteBuffer pkt, int dataLen, int packetLen) {
-    pkt.clear().limit(packetLen);
     // both syncBlock and syncPacket are false
     PacketHeader header = new PacketHeader(packetLen, offset, seqno,
         (dataLen == 0), dataLen, false);
