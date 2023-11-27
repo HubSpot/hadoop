@@ -1422,6 +1422,7 @@ public class UserGroupInformation {
     if (user == null || user.isEmpty()) {
       throw new IllegalArgumentException("Null user");
     }
+    LOG.info("Creating new subject", new RuntimeException());
     Subject subject = new Subject();
     subject.getPrincipals().add(new User(user));
     UserGroupInformation result = new UserGroupInformation(subject);
@@ -1498,6 +1499,7 @@ public class UserGroupInformation {
     if (realUser == null) {
       throw new IllegalArgumentException("Null real user");
     }
+    LOG.info("Creating new subject", new RuntimeException());
     Subject subject = new Subject();
     Set<Principal> principals = subject.getPrincipals();
     principals.add(new User(user, AuthenticationMethod.PROXY, null));
@@ -1856,7 +1858,7 @@ public class UserGroupInformation {
    * Get the underlying subject from this ugi.
    * @return the subject that represents this user.
    */
-  protected Subject getSubject() {
+  public Subject getSubject() {
     return subject;
   }
 

@@ -3691,6 +3691,20 @@ public abstract class FileSystem extends Configured
       if (fs != null) {
         return fs;
       }
+
+      LOG.info("Creating new FS for URI="
+               + uri + ", Key=" + key + ", SubjectHash="
+               + key.ugi.hashCode()
+               + ", Subject="
+               + key.ugi.getSubject().toString()
+               + ", existing="
+               + map.entrySet()
+                    .stream()
+                    .filter(entry ->
+                                    entry.getKey().authority.equals(key.authority)
+                                    && entry.getKey().scheme.equals(key.scheme))
+                       .map(entry -> "[ugi="+entry.getKey().ugi.toString() +", subject=" + entry.getKey().ugi.getSubject() + "]")
+      );
       // fs not yet created, acquire lock
       // to construct an instance.
       try (DurationInfo d = new DurationInfo(LOGGER, false,

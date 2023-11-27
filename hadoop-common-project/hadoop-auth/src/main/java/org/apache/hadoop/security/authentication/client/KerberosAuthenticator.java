@@ -298,6 +298,7 @@ public class KerberosAuthenticator implements Authenticator {
           || (!KerberosUtil.hasKerberosKeyTab(subject)
               && !KerberosUtil.hasKerberosTicket(subject))) {
         LOG.debug("No subject in context, logging in");
+        LOG.info("Creating new subject", new RuntimeException());
         subject = new Subject();
         LoginContext login = new LoginContext("", subject,
             null, new KerberosConfiguration());
