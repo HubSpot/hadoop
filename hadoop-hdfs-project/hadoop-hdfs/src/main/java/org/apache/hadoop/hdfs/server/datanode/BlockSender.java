@@ -574,7 +574,6 @@ class BlockSender implements java.io.Closeable {
     // Per above, the header doesn't start at the beginning of the
     // buffer
     int headerOff = pkt.position() - headerLen;
-    
     int checksumOff = pkt.position();
 
     if (checksumSize > 0 && ris.getChecksumIn() != null) {
@@ -592,10 +591,9 @@ class BlockSender implements java.io.Closeable {
     }
     
     int dataOff = checksumOff + checksumDataLen;
-    pkt.position(dataOff);
     if (!transferTo) { // normal transfer
       try {
-        ris.readDataFully(pkt.slice().limit(dataLen));
+        ris.readDataFully(pkt.position(dataOff).slice().limit(dataLen));
       } catch (IOException ioe) {
         if (ioe.getMessage().startsWith(EIO_ERROR)) {
           throw new DiskFileCorruptException("A disk IO error occurred", ioe);
@@ -612,10 +610,7 @@ class BlockSender implements java.io.Closeable {
       if (transferTo) {
         SocketOutputStream sockOut = (SocketOutputStream)out;
         // First write header and checksums
-        pkt = pkt.position(headerOff).slice().limit(dataOff - headerOff);
-        while (pkt.hasRemaining()) {
-          sockOut.write(pkt.get());
-        }
+        IOUtils.writeFully(out, pkt.position(headerOff).slice().limit(dataOff - headerOff));
 
         // no need to flush since we know out is not a buffered stream
         FileChannel fileCh = ((FileInputStream)ris.getDataIn()).getChannel();
@@ -629,10 +624,7 @@ class BlockSender implements java.io.Closeable {
         blockInPosition += dataLen;
       } else {
         // normal transfer
-        pkt = pkt.position(headerOff).slice().limit(dataOff + dataLen - headerOff);
-        while (pkt.hasRemaining()) {
-          out.write(pkt.get());
-        }
+        IOUtils.writeFully(out, pkt.position(headerOff).slice().limit(dataOff + dataLen - headerOff));
       }
     } catch (IOException e) {
       if (e instanceof SocketTimeoutException) {
@@ -838,7 +830,7 @@ class BlockSender implements java.io.Closeable {
 
       while (endOffset > offset && !Thread.currentThread().isInterrupted()) {
         manageOsCache();
-        long len = sendPacket(pktBuf.rewind().slice(), maxChunksPerPacket, streamForSendChunks,
+        long len = sendPacket(pktBuf.slice(), maxChunksPerPacket, streamForSendChunks,
             transferTo, throttler);
         offset += len;
         totalRead += len + (numberOfChunks(len) * checksumSize);
@@ -848,7 +840,7 @@ class BlockSender implements java.io.Closeable {
       if (!Thread.currentThread().isInterrupted()) {
         try {
           // send an empty packet to mark the end of the block
-          sendPacket(pktBuf.rewind(), maxChunksPerPacket, streamForSendChunks, transferTo,
+          sendPacket(pktBuf.slice(), maxChunksPerPacket, streamForSendChunks, transferTo,
               throttler);
           out.flush();
         } catch (IOException e) { //socket error

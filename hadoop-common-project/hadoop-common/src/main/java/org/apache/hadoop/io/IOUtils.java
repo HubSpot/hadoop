@@ -368,6 +368,12 @@ public class IOUtils {
     } while (buf.remaining() > 0);
   }
 
+  public static void writeFully(OutputStream out, ByteBuffer buf) throws IOException {
+    while (buf.hasRemaining()) {
+      out.write(buf.get());
+    }
+  }
+
   /**
    * Write a ByteBuffer to a FileChannel at a given offset, 
    * handling short writes.
