@@ -28,7 +28,9 @@ import java.io.OutputStream;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.channels.WritableByteChannel;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
@@ -610,7 +612,7 @@ class BlockSender implements java.io.Closeable {
       if (transferTo) {
         SocketOutputStream sockOut = (SocketOutputStream)out;
         // First write header and checksums
-        IOUtils.writeFully(out, pkt.position(headerOff).limit(headerOff + headerLen + checksumDataLen));
+        IOUtils.writeFully(sockOut.getChannel(), pkt.position(headerOff).limit(headerOff + headerLen + checksumDataLen));
 
         // no need to flush since we know out is not a buffered stream
         FileChannel fileCh = ((FileInputStream)ris.getDataIn()).getChannel();
@@ -850,15 +852,15 @@ class BlockSender implements java.io.Closeable {
         sentEntireByteRange = true;
       }
     } finally {
-      if (pktBuf != null) {
-        POOL.returnBuffer(pktBuf);
-      }
       if ((clientTraceFmt != null) && ClientTraceLog.isDebugEnabled()) {
         final long endTime = System.nanoTime();
         ClientTraceLog.debug(String.format(clientTraceFmt, totalRead,
             initialOffset, endTime - startTime) + "; requestedBytes=" + requestedLength);
       }
       close();
+      if (pktBuf != null) {
+        POOL.returnBuffer(pktBuf);
+      }
     }
     return totalRead;
   }

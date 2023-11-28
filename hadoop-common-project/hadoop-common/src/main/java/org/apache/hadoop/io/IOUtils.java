@@ -22,7 +22,9 @@ import java.io.*;
 import java.lang.reflect.Constructor;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.DirectoryIteratorException;
@@ -37,6 +39,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.PathIOException;
+import org.apache.hadoop.net.SocketOutputStream;
 import org.apache.hadoop.util.Shell;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -222,12 +225,9 @@ public class IOUtils {
   }
 
   public static void readFully(InputStream in, ByteBuffer out) throws IOException {
-    while (out.hasRemaining()) {
-      int ret = in.read();
-      if (ret < 0) {
-        throw new IOException( "Premature EOF from inputStream");
-      }
-      out.put((byte)ret);
+    ReadableByteChannel channel = Channels.newChannel(in);
+    if (channel.read(out) == -1) {
+      throw new IOException("Premature EOF from inputStream");
     }
   }
   
@@ -369,9 +369,13 @@ public class IOUtils {
   }
 
   public static void writeFully(OutputStream out, ByteBuffer buf) throws IOException {
-    while (buf.hasRemaining()) {
-      out.write(buf.get());
+    WritableByteChannel channel;
+    if (out instanceof SocketOutputStream) {
+      channel = ((SocketOutputStream) out).getChannel();
+    } else {
+      channel = Channels.newChannel(out);
     }
+    writeFully(channel, buf);
   }
 
   /**
