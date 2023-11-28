@@ -593,7 +593,7 @@ class BlockSender implements java.io.Closeable {
     int dataOff = checksumOff + checksumDataLen;
     if (!transferTo) { // normal transfer
       try {
-        ris.readDataFully(pkt.position(dataOff).slice().limit(dataLen));
+        ris.readDataFully(pkt.position(dataOff).limit(dataOff + dataLen));
       } catch (IOException ioe) {
         if (ioe.getMessage().startsWith(EIO_ERROR)) {
           throw new DiskFileCorruptException("A disk IO error occurred", ioe);
@@ -610,7 +610,7 @@ class BlockSender implements java.io.Closeable {
       if (transferTo) {
         SocketOutputStream sockOut = (SocketOutputStream)out;
         // First write header and checksums
-        IOUtils.writeFully(out, pkt.position(headerOff).slice().limit(dataOff - headerOff));
+        IOUtils.writeFully(out, pkt.position(headerOff).limit(headerOff + headerLen + checksumDataLen));
 
         // no need to flush since we know out is not a buffered stream
         FileChannel fileCh = ((FileInputStream)ris.getDataIn()).getChannel();
@@ -624,7 +624,7 @@ class BlockSender implements java.io.Closeable {
         blockInPosition += dataLen;
       } else {
         // normal transfer
-        IOUtils.writeFully(out, pkt.position(headerOff).slice().limit(dataOff + dataLen - headerOff));
+        IOUtils.writeFully(out, pkt.position(headerOff).limit(headerOff + headerLen + checksumDataLen + dataLen));
       }
     } catch (IOException e) {
       if (e instanceof SocketTimeoutException) {
@@ -690,7 +690,7 @@ class BlockSender implements java.io.Closeable {
     if (checksumSize <= 0 && ris.getChecksumIn() == null) {
       return;
     }
-    pkt = pkt.position(checksumOffset).slice().limit(checksumLen);
+    pkt.position(checksumOffset).limit(checksumOffset + checksumLen);
     try {
       ris.readChecksumFully(pkt);
     } catch (IOException e) {
@@ -699,7 +699,7 @@ class BlockSender implements java.io.Closeable {
       ris.closeChecksumStream();
       if (corruptChecksumOk) {
         if (checksumLen > 0) {
-          pkt.rewind();
+          pkt.position(checksumOffset);
           // Just fill the array with zeros.
           while(pkt.hasRemaining()) {
             pkt.put((byte) 0);
@@ -830,7 +830,7 @@ class BlockSender implements java.io.Closeable {
 
       while (endOffset > offset && !Thread.currentThread().isInterrupted()) {
         manageOsCache();
-        long len = sendPacket(pktBuf.slice(), maxChunksPerPacket, streamForSendChunks,
+        long len = sendPacket(pktBuf.rewind(), maxChunksPerPacket, streamForSendChunks,
             transferTo, throttler);
         offset += len;
         totalRead += len + (numberOfChunks(len) * checksumSize);
@@ -840,7 +840,7 @@ class BlockSender implements java.io.Closeable {
       if (!Thread.currentThread().isInterrupted()) {
         try {
           // send an empty packet to mark the end of the block
-          sendPacket(pktBuf.slice(), maxChunksPerPacket, streamForSendChunks, transferTo,
+          sendPacket(pktBuf.rewind(), maxChunksPerPacket, streamForSendChunks, transferTo,
               throttler);
           out.flush();
         } catch (IOException e) { //socket error
