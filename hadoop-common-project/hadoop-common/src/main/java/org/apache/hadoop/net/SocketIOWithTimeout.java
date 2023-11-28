@@ -161,7 +161,7 @@ abstract class SocketIOWithTimeout {
 
       if (count == 0) {
         throw new SocketTimeoutException(timeoutExceptionString(channel,
-                                                                timeout, ops));
+                                                                timeout, ops) + ", position=" + buf.position() + ", limit=" + buf.limit() + ", remaining=" + buf.remaining() + ", capacity=" + buf.capacity());
       }
       // otherwise the socket should be ready for io.
     }

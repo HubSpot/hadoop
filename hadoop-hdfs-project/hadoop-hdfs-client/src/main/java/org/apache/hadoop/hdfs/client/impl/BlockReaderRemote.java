@@ -23,6 +23,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.util.EnumSet;
@@ -99,6 +100,7 @@ public class BlockReaderRemote implements BlockReader {
 
   private DataChecksum checksum;
   private final PacketReceiver packetReceiver = new PacketReceiver(true);
+  private int packetsReceived = 0;
 
   private ByteBuffer curDataSlice = null;
 
@@ -166,7 +168,12 @@ public class BlockReaderRemote implements BlockReader {
   public synchronized int read(ByteBuffer buf) throws IOException {
     if (curDataSlice == null ||
         (curDataSlice.remaining() == 0 && bytesNeededToFinish > 0)) {
-      readNextPacket();
+      try {
+        readNextPacket();
+      } catch (SocketTimeoutException e) {
+        LOG.error("Got STE with curDataSlice={}, bytesNeededToFinish={}, packetsReceived={}", curDataSlice, bytesNeededToFinish, packetsReceived);
+        throw e;
+      }
     }
     if (curDataSlice.remaining() == 0) {
       // we're at EOF now
@@ -185,6 +192,7 @@ public class BlockReaderRemote implements BlockReader {
   private void readNextPacket() throws IOException {
     //Read packet headers.
     packetReceiver.receiveNextPacket(in);
+    packetsReceived++;
 
     PacketHeader curHeader = packetReceiver.getHeader();
     curDataSlice = packetReceiver.getDataSlice();
