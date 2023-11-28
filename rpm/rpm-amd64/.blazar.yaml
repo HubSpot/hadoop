@@ -16,7 +16,9 @@ env:
   PLATFORMS: "amd64"
   DISABLE_CENTOS_6_RPMS: "true"
   ENABLE_CENTOS_8_RPMS: "true"
-  YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8: "8_hs-hadoop${GIT_NON_DEFAULT_BRANCH:+-develop}"
+
+  # Set this to an empty var so we can override with write-build-env-var below
+  YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8: ""
 
   # The entry point script for the rpm build
   RPM_BUILD_COMMAND: "../build.sh"
@@ -27,7 +29,14 @@ env:
 before:
   - description: Set yum repo
     commands:
-      - echo "Will upload package to $YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8"
+      - |
+          if [[ "$GIT_NON_DEFAULT_BRANCH" = "" || "$GIT_NON_DEFAULT_BRANCH" = "hubspot-3.3" ]]; then
+            YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8="8_hs-hadoop"
+          else
+            YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8="8_hs-hadoop-develop"
+          fi
+          echo "Will upload package to $YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8"
+          write-build-env-var YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8 "$YUM_REPO_UPLOAD_OVERRIDE_CENTOS_8"
 
 buildResources:
   cpus: 8
