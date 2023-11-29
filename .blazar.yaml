@@ -1,6 +1,12 @@
 buildpack:
   name: Blazar-Buildpack-Java
 
+env:
+  MAVEN_ARGS: ""
+  SET_VERSION: ""
+  PKG_RELEASE: ""
+  FULL_BUILD_VERSION: ""
+
 # Note: this blazar yaml has been copied to all of the maven submodules so
 # that they can be properly configured. If you make changes to this, you will need to make sure all
 # submodules are also updated accordingly. If you added a new submodule, you'll need to make sure
