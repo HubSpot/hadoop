@@ -222,8 +222,8 @@ public class BlockTokenIdentifier extends TokenIdentifier {
     // for something (e.g retrieve password), we should return the raw bytes
     // instead of serializing the instance self fields to bytes, because we may
     // lose newly added fields which we can't recognize
-    this.cache = IOUtils.readFullyToByteArray(dis);
-    dis.reset();
+//    this.cache = IOUtils.readFullyToByteArray(dis);
+//    dis.reset();
 
     dis.mark(1);
     final byte firstByte = dis.readByte();
