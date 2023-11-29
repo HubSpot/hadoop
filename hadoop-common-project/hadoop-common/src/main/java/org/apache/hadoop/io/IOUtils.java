@@ -225,7 +225,12 @@ public class IOUtils {
   }
 
   public static void readFully(InputStream in, ByteBuffer out) throws IOException {
-    ReadableByteChannel channel = Channels.newChannel(in);
+    ReadableByteChannel channel;
+    if (in instanceof FileInputStream) {
+      channel = ((FileInputStream) in).getChannel();
+    } else {
+      channel = Channels.newChannel(in);
+    }
     if (channel.read(out) == -1) {
       throw new IOException("Premature EOF from inputStream");
     }
