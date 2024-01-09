@@ -22,6 +22,7 @@ mkdir -p build
 MAVEN_OPTS+="-DskipTests -DskipTest -DskipITs -Dmaven.javadoc.skip=true "
 MAVEN_OPTS+="-Drequire.zstd -Dbundle.zstd -Dzstd.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.snappy -Dbundle.snappy=true -Dsnappy.lib=/usr/lib64 "
+MAVEN_OPTS+="-Drequire.isal -Dbundle.isal=true -Disal.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.openssl "
 
 # The Yarn UI and the yarn applications catalog both require a version of node.js which does not work with centos6
