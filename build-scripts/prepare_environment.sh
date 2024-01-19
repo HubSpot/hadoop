@@ -21,7 +21,7 @@ MAIN_BRANCH="hubspot-${PATCH_VERSION}"
 # At some point it would be good to more closely link this to our hadoop build, but that can only happen
 # once we update our apache-hadoop build to do a full maven. At which point we can probably change this to
 # like 3.0-hubspot-SNAPSHOT and leave it at that.
-MAVEN_ARGS="$VERSION_ARGS -Dgpg.skip=true -DskipTests=true -DskipTest -DskipITs  -Dmaven.install.skip=false -Dmaven.repo.local=$WORKSPACE/.m2"
+MAVEN_ARGS="$MAVEN_AGS $VERSION_ARGS -Dgpg.skip=true -DskipTests=true -DskipTest -DskipITs  -Dmaven.install.skip=false -Dmaven.repo.local=$WORKSPACE/.m2"
 
 MAVEN_ARGS="$MAVEN_ARGS -Phbase1"
 
