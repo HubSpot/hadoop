@@ -9,6 +9,9 @@ env:
   SET_VERSION: ""
   PKG_RELEASE: ""
   FULL_BUILD_VERSION: ""
+  # Hadoop build needs -Pdist to generate sources, but that fails on javadoc generation. When we have time to figure out why javadoc generation
+  # is failing, that would probably be best. For now I've manually added the source plugin to the executions here which seems to work. 
+  MAVEN_PHASE: "org.apache.maven.plugins:maven-source-plugin:2.3:jar-no-fork org.apache.maven.plugins:maven-source-plugin:2.3:test-jar-no-fork package deploy"
 
 before:
   - description: "Prepare build environment"
