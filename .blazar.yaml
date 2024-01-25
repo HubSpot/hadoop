@@ -13,6 +13,8 @@ env:
   # is failing, that would probably be best. For now I've manually added the source plugin to the executions here which seems to work. 
   MAVEN_PHASE: "org.apache.maven.plugins:maven-source-plugin:2.3:jar-no-fork org.apache.maven.plugins:maven-source-plugin:2.3:test-jar-no-fork package deploy"
 
+buildTimeoutOverrideMinutes: 60
+
 before:
   - description: "Prepare build environment"
     commands:
