@@ -5,7 +5,7 @@ buildpack:
 # be modified by the `write-build-env-var` utilty script to persist changes to an environment variable
 # throughout a build
 env:
-  MAVEN_ARGS: "-pl !hadoop-tools/hadoop-benchmark -DdeployAtEnd=true"
+  MAVEN_ARGS: "-pl !hadoop-tools/hadoop-benchmark"
   SET_VERSION: ""
   PKG_RELEASE: ""
   FULL_BUILD_VERSION: ""
@@ -17,3 +17,5 @@ before:
   - description: "Prepare build environment"
     commands:
       - $WORKSPACE/build-scripts/prepare_environment.sh
+
+buildTimeoutOverrideMinutes: 60
