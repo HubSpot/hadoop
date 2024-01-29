@@ -5,7 +5,7 @@ buildpack:
 # be modified by the `write-build-env-var` utilty script to persist changes to an environment variable
 # throughout a build
 env:
-  MAVEN_BUILD_ARGS: "-pl !hadoop-tools/hadoop-benchmark"
+  MAVEN_BUILD_ARGS: "-pl !hadoop-tools/hadoop-benchmark -DdeployAtEnd=true -Dmaven-deploy-plugin.version=3.1.1"
   SET_VERSION: ""
   PKG_RELEASE: ""
   FULL_BUILD_VERSION: ""
