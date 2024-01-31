@@ -34,7 +34,6 @@ import org.apache.hadoop.hdfs.util.StripedBlockUtil.AlignedStripe;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.StripeRange;
 import org.apache.hadoop.io.ByteBufferPool;
 
-import org.apache.hadoop.io.ElasticByteBufferPool;
 import org.apache.hadoop.io.erasurecode.CodecUtil;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 
@@ -62,7 +61,6 @@ import static org.apache.hadoop.hdfs.util.IOUtilsClient.updateReadStatistics;
 @InterfaceAudience.Private
 public class DFSStripedInputStream extends DFSInputStream {
 
-  private static final ByteBufferPool BUFFER_POOL = new ElasticByteBufferPool();
   private final BlockReaderInfo[] blockReaders;
   private final int cellSize;
   private final short dataBlkNum;
@@ -119,7 +117,7 @@ public class DFSStripedInputStream extends DFSInputStream {
 
   private void resetCurStripeBuffer(boolean shouldAllocateBuf) {
     if (shouldAllocateBuf && curStripeBuf == null) {
-      curStripeBuf = BUFFER_POOL.getBuffer(useDirectBuffer(),
+      curStripeBuf = getBufferPool().getBuffer(useDirectBuffer(),
           cellSize * dataBlkNum);
     }
     if (curStripeBuf != null) {
@@ -130,7 +128,7 @@ public class DFSStripedInputStream extends DFSInputStream {
 
   protected synchronized ByteBuffer getParityBuffer() {
     if (parityBuf == null) {
-      parityBuf = BUFFER_POOL.getBuffer(useDirectBuffer(),
+      parityBuf = getBufferPool().getBuffer(useDirectBuffer(),
           cellSize * parityBlkNum);
     }
     parityBuf.clear();
@@ -142,7 +140,7 @@ public class DFSStripedInputStream extends DFSInputStream {
   }
 
   protected ByteBufferPool getBufferPool() {
-    return BUFFER_POOL;
+    return dfsClient.getStripedReadBufferPool();
   }
 
   protected ThreadPoolExecutor getStripedReadsThreadPool(){
@@ -178,11 +176,11 @@ public class DFSStripedInputStream extends DFSInputStream {
       super.close();
     } finally {
       if (curStripeBuf != null) {
-        BUFFER_POOL.putBuffer(curStripeBuf);
+        getBufferPool().putBuffer(curStripeBuf);
         curStripeBuf = null;
       }
       if (parityBuf != null) {
-        BUFFER_POOL.putBuffer(parityBuf);
+        getBufferPool().putBuffer(parityBuf);
         parityBuf = null;
       }
       if (decoder != null) {
@@ -558,11 +556,11 @@ public class DFSStripedInputStream extends DFSInputStream {
   public synchronized void unbuffer() {
     super.unbuffer();
     if (curStripeBuf != null) {
-      BUFFER_POOL.putBuffer(curStripeBuf);
+      getBufferPool().putBuffer(curStripeBuf);
       curStripeBuf = null;
     }
     if (parityBuf != null) {
-      BUFFER_POOL.putBuffer(parityBuf);
+      getBufferPool().putBuffer(parityBuf);
       parityBuf = null;
     }
   }

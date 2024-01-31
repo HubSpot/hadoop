@@ -158,6 +158,7 @@ public class DfsClientConf {
       replicaAccessorBuilderClasses;
 
   private final int stripedReadThreadpoolSize;
+  private final boolean stripedReadWeakRefBufferPool;
 
   private final boolean dataTransferTcpNoDelay;
 
@@ -296,6 +297,11 @@ public class DfsClientConf {
     Preconditions.checkArgument(stripedReadThreadpoolSize > 0, "The value of " +
         HdfsClientConfigKeys.StripedRead.THREADPOOL_SIZE_KEY +
         " must be greater than 0.");
+
+    stripedReadWeakRefBufferPool = conf.getBoolean(
+            HdfsClientConfigKeys.StripedRead.WEAK_REF_BUFFER_POOL_KEY,
+            HdfsClientConfigKeys.StripedRead.WEAK_REF_BUFFER_POOL_DEFAULT);
+
     replicaAccessorBuilderClasses = loadReplicaAccessorBuilderClasses(conf);
 
     leaseHardLimitPeriod =
@@ -701,6 +707,10 @@ public class DfsClientConf {
    */
   public int getStripedReadThreadpoolSize() {
     return stripedReadThreadpoolSize;
+  }
+
+  public boolean getStripedReadWeakRefBufferPool() {
+    return stripedReadWeakRefBufferPool;
   }
 
   /**
