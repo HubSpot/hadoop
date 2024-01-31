@@ -507,6 +507,9 @@ public interface HdfsClientConfigKeys {
     String DATANODE_MAX_ATTEMPTS = PREFIX +
                                    "datanode.max.attempts";
     int DATANODE_MAX_ATTEMPTS_DEFAULT = 1;
+
+    String WEAK_REF_BUFFER_POOL_KEY = PREFIX + "bufferpool.weak.references.enabled";
+    boolean WEAK_REF_BUFFER_POOL_DEFAULT = false;
   }
 
   /** dfs.http.client configuration properties */
