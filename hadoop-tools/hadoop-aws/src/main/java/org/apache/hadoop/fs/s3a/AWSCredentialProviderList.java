@@ -172,7 +172,9 @@ public class AWSCredentialProviderList implements AWSCredentialsProvider,
     }
 
     AmazonClientException lastException = null;
+    LOG.error("Using provider size ++++++", providers.size());
     for (AWSCredentialsProvider provider : providers) {
+      LOG.error("Analytizing provider.getClass() :", provider.getClass()+" provider.getCredentials().getAWSAccessKeyId() "+provider.getCredentials().getAWSAccessKeyId());
       try {
         AWSCredentials credentials = provider.getCredentials();
         Preconditions.checkNotNull(credentials,
