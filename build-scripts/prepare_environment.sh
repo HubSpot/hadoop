@@ -21,9 +21,9 @@ MAIN_BRANCH="hubspot-${PATCH_VERSION}"
 # At some point it would be good to more closely link this to our hadoop build, but that can only happen
 # once we update our apache-hadoop build to do a full maven. At which point we can probably change this to
 # like 3.0-hubspot-SNAPSHOT and leave it at that.
-MAVEN_ARGS="$MAVEN_ARGS $VERSION_ARGS -Dgpg.skip=true -DskipTests=true -DskipTest -DskipITs  -Dmaven.install.skip=false -Dmaven.repo.local=$WORKSPACE/.m2"
+MAVEN_BUILD_ARGS="$MAVEN_BUILD_ARGS $VERSION_ARGS -Dgpg.skip=true -DskipTests=true -DskipTest -DskipITs  -Dmaven.install.skip=false -Dmaven.repo.local=$WORKSPACE/.m2"
 
-MAVEN_ARGS="$MAVEN_ARGS -Phbase1"
+MAVEN_BUILD_ARGS="$MAVEN_BUILD_ARGS -Phbase1"
 
 #
 # Validate inputs from blazar
@@ -73,12 +73,12 @@ fi
 RELEASE="${RELEASE}.${BUILD_NUMBER}"
 FULL_BUILD_VERSION="${HADOOP_VERSION}-${RELEASE}"
 
-MAVEN_ARGS="$MAVEN_ARGS -Dhadoop.version=$MAVEN_VERSION"
+MAVEN_BUILD_ARGS="$MAVEN_BUILD_ARGS -Dhadoop.version=$MAVEN_VERSION"
 
-write-build-env-var MAVEN_ARGS "$MAVEN_ARGS"
+write-build-env-var MAVEN_BUILD_ARGS "$MAVEN_BUILD_ARGS"
 write-build-env-var SET_VERSION "$MAVEN_VERSION"
 write-build-env-var PKG_RELEASE "$RELEASE"
 write-build-env-var FULL_BUILD_VERSION "$FULL_BUILD_VERSION"
 
 echo "Will use maven version $MAVEN_VERSION"
-echo "Will run maven with extra args $MAVEN_ARGS"
+echo "Will run maven with extra args $MAVEN_BUILD_ARGS"
