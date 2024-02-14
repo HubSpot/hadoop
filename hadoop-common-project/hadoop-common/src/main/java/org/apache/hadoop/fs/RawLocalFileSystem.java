@@ -41,10 +41,13 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.List;
@@ -1109,11 +1112,23 @@ public class RawLocalFileSystem extends FileSystem {
     if (NativeIO.isAvailable()) {
       NativeIO.POSIX.chmod(pathToFile(p).getCanonicalPath(),
                      permission.toShort());
+    } else if (!Shell.WINDOWS) {
+      Files.setPosixFilePermissions(pathToFile(p).toPath(), convertPermissions(permission));
     } else {
       String perm = String.format("%04o", permission.toShort());
       Shell.execCommand(Shell.getSetPermissionCommand(perm, false,
-        FileUtil.makeShellPath(pathToFile(p), true)));
+              FileUtil.makeShellPath(pathToFile(p), true)));
     }
+  }
+
+  /**
+   * Converts {@link FsPermission} to a POSIX string representation
+   */
+  private Set<PosixFilePermission> convertPermissions(FsPermission permission) {
+    return PosixFilePermissions.fromString(String.format("%s%s%s",
+            permission.getUserAction().SYMBOL,
+            permission.getGroupAction().SYMBOL,
+            permission.getOtherAction().SYMBOL));
   }
  
   /**
