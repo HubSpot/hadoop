@@ -356,13 +356,9 @@ public class CopyFromLocalOperation extends ExecutingStoreOperation<Void> {
   private Path getFinalPath(Path src) throws PathIOException {
     URI currentSrcUri = src.toUri();
     URI relativeSrcUri = source.toUri().relativize(currentSrcUri);
-    if (relativeSrcUri.equals(currentSrcUri)) {
-      throw new PathIOException("Cannot get relative path for URI:"
-          + relativeSrcUri);
-    }
 
     Optional<FileStatus> status = getDestStatus();
-    if (!relativeSrcUri.getPath().isEmpty()) {
+    if (!relativeSrcUri.getPath().isEmpty() && !relativeSrcUri.equals(currentSrcUri)) {
       return new Path(destination, relativeSrcUri.getPath());
     } else if (status.isPresent() && status.get().isDirectory()) {
       // file to dir
