@@ -18,7 +18,7 @@ enableBuildTargets:
 
 env:
   # Set this to an empty var so we can override with write-build-env-var below
-  EL8_REPO_NAME: ""
+  REPO_NAME: ""
 
   BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/apache-hadoop-build-container:latest"
   CONTAINER_TEMP_OUTPUT_DIR: /temporary_artifacts
@@ -29,12 +29,12 @@ before:
     commands:
       - |
           if [[ "$GIT_NON_DEFAULT_BRANCH" = "" || "$GIT_NON_DEFAULT_BRANCH" = "hubspot-3.3.6" ]]; then
-            EL8_REPO_NAME="8_hs-hadoop"
+            REPO_NAME="8_hs-hadoop"
           else
-            EL8_REPO_NAME="8_hs-hadoop-develop"
+            REPO_NAME="8_hs-hadoop-develop"
           fi
-          echo "Will upload package to $EL8_REPO_NAME"
-          write-build-env-var EL8_REPO_NAME "$EL8_REPO_NAME"
+          echo "Will upload package to $REPO_NAME"
+          write-build-env-var REPO_NAME "$REPO_NAME"
 
 buildResources:
   cpus: 8
