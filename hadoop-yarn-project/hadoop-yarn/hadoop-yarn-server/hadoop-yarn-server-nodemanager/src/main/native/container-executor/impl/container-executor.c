@@ -115,6 +115,23 @@ void set_nm_uid(uid_t user, gid_t group) {
   nm_gid = group;
 }
 
+// Validate path string
+static int is_invalid_path(const char *path) {
+  char *copiedPath = strdup(path);
+  char *token;
+  char *rest;
+  token = strtok_r(copiedPath, "/", &rest);
+  while (token) {
+    if (0 == strcmp("..", token)) {
+      free(copiedPath);
+      return 1;
+    }
+    token = strtok_r(NULL, "/", &rest);
+  }
+  free(copiedPath);
+  return 0;
+}
+
 //function used to load the configurations present in the secure config
 void read_executor_config(const char *file_name) {
   const struct section *tmp = NULL;
@@ -791,7 +808,7 @@ static int create_container_directories(const char* user, const char *app_id,
     if (container_dir == NULL) {
       return OUT_OF_MEMORY;
     }
-    if (strstr(container_dir, "..") != 0) {
+    if (is_invalid_path(container_dir)) {
       fprintf(LOGFILE, "Unsupported container directory path detected.\n");
       return COULD_NOT_CREATE_WORK_DIRECTORIES;
     }
@@ -830,7 +847,7 @@ static int create_container_directories(const char* user, const char *app_id,
         free(combined_name);
         return OUT_OF_MEMORY;
       }
-      if (strstr(container_log_dir, "..") != 0) {
+      if (is_invalid_path(container_log_dir)) {
         fprintf(LOGFILE, "Unsupported container log directory path detected.\n");
         free(container_log_dir);
         free(combined_name);
@@ -862,7 +879,7 @@ static int create_container_directories(const char* user, const char *app_id,
     return OUT_OF_MEMORY;
   }
 
-  if (strstr(tmp_dir, "..") != 0 || strstr(private_tmp_dir, "..") != 0 || strstr(private_var_tmp_dir, "..") != 0) {
+  if (is_invalid_path(tmp_dir) || is_invalid_path(private_tmp_dir) || is_invalid_path(private_var_tmp_dir)) {
     fprintf(ERRORFILE, "Unsupported tmp directory path detected.\n");
     result = COULD_NOT_CREATE_TMP_DIRECTORIES;
     goto cleanup;
@@ -1236,7 +1253,7 @@ int initialize_user(const char *user, char* const* local_dirs) {
       failed = 1;
       break;
     // Avoid possible wrong validation. Username can contain double dots.
-    } else if (strstr(user_dir, "/../") != 0) {
+    } else if (is_invalid_path(user_dir)) {
       fprintf(LOGFILE, "Unsupported userdir directory path detected.\n");
       failed = 1;
       break;
@@ -1261,7 +1278,7 @@ int create_log_dirs(const char *app_id, char * const * log_dirs) {
     }
     if (app_log_dir == NULL) {
       // try the next one
-    } else if (strstr(app_log_dir, "..") != 0) {
+    } else if (is_invalid_path(app_log_dir)) {
       fprintf(LOGFILE, "Unsupported app-log directory path detected.\n");
       free(app_log_dir);
     } else if (create_directory_for_user(app_log_dir) != 0) {
@@ -1336,7 +1353,7 @@ int create_container_log_dirs(const char *container_id, const char *app_id,
       free(container_log_dir);
       container_log_dir = NULL;
       continue;
-    } else if (strstr(container_log_dir, "..") != 0) {
+    } else if (is_invalid_path(container_log_dir)) {
       fprintf(LOGFILE, "Unsupported container log directory path (%s) detected.\n",
               container_log_dir);
       free(container_log_dir);
@@ -1381,7 +1398,7 @@ static char *create_app_dirs(const char *user,
     char *app_dir = get_app_directory(*nm_root, user, app_id);
     if (app_dir == NULL) {
       // try the next one
-    } else if (strstr(app_dir, "..") != 0) {
+    } else if (is_invalid_path(app_dir)) {
       fprintf(LOGFILE, "Unsupported app directory path detected.\n");
       free(app_dir);
     } else if (mkdirs(app_dir, permissions) != 0) {
@@ -1955,7 +1972,7 @@ int create_user_filecache_dirs(const char * user, char* const* local_dirs) {
       rc = INITIALIZE_USER_FAILED;
       break;
     }
-    if (strstr(filecache_dir, "..") != 0) {
+    if (is_invalid_path(filecache_dir)) {
       fprintf(LOGFILE, "Unsupported filecache directory path detected.\n");
       free(filecache_dir);
       rc = INITIALIZE_USER_FAILED;
@@ -1985,7 +2002,7 @@ int create_yarn_sysfs(const char* user, const char *app_id,
       return OUT_OF_MEMORY;
     }
     char *yarn_sysfs_dir = make_string("%s/%s", container_dir, "sysfs");
-    if (strstr(yarn_sysfs_dir, "..") != 0) {
+    if (is_invalid_path(yarn_sysfs_dir)) {
       fprintf(LOGFILE, "Unsupported yarn sysfs directory path detected.\n");
       free(yarn_sysfs_dir);
       free(container_dir);
