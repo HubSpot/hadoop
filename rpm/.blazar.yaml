@@ -29,9 +29,9 @@ before:
     commands:
       - |
           if [[ "$GIT_NON_DEFAULT_BRANCH" = "" || "$GIT_NON_DEFAULT_BRANCH" = "hubspot-3.3.6" ]]; then
-            REPO_NAME="8_hs-hadoop"
+            REPO_NAME="AnyLinuxVersion_hs-hadoop"
           else
-            REPO_NAME="8_hs-hadoop-develop"
+            REPO_NAME="AnyLinuxVersion_hs-hadoop-develop"
           fi
           echo "Will upload package to $REPO_NAME"
           write-build-env-var REPO_NAME "$REPO_NAME"
