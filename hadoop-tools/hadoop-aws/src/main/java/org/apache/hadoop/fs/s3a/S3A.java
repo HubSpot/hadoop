@@ -41,6 +41,7 @@ public class S3A extends DelegateToFileSystem {
       throws IOException, URISyntaxException {
     super(theUri, new S3AFileSystem(), conf,
         theUri.getScheme().isEmpty() ? FS_S3A : theUri.getScheme(), false);
+    ((S3AFileSystem)this.fsImpl).setBackReference(this);
   }
 
   @Override

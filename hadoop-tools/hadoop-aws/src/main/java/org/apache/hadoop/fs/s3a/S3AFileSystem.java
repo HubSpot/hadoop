@@ -429,6 +429,12 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
    */
   private String scheme = FS_S3A;
 
+  /**
+   * Backreference to creating S3A object. Prevents finalize on that object.
+   * Set to null on close.
+   */
+  private S3A backReference = null;
+
   /** Add any deprecated keys. */
   @SuppressWarnings("deprecation")
   private static void addDeprecatedKeys() {
@@ -666,6 +672,14 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
       stopAllServices();
       throw e;
     }
+  }
+
+  /**
+   * Creates a back reference to prevent GC of that object, prematurely closing this object.
+   * @param backReference The object to backreference.
+   */
+  public void setBackReference(S3A backReference) {
+    this.backReference = backReference;
   }
 
   /**
@@ -4050,7 +4064,6 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
       return;
     }
     isClosed = true;
-    LOG.debug("Filesystem {} is closed", uri);
     try {
       super.close();
     } finally {
@@ -4063,6 +4076,8 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
                 IOSTATISTICS_LOGGING_LEVEL_DEFAULT);
         logIOStatisticsAtLevel(LOG, iostatisticsLoggingLevel, getIOStatistics());
       }
+      // Invalidate back reference to allow GC collection
+      this.backReference = null;
     }
   }
 
