@@ -98,6 +98,8 @@ public class TestCounters {
   static final String FS_SCHEME = "HDFS";
   static final FileSystemCounter FS_COUNTER = FileSystemCounter.BYTES_READ;
   static final long FS_COUNTER_VALUE = 10;
+  static final FileSystemCounter FS_LOCAL_RACK_COUNTER = FileSystemCounter.BYTES_READ_LOCAL_RACK;
+  static final long FS_LOCAL_RACK_COUNTER_VALUE = 5;
 
   private void testMaxCounters(final Counters counters) {
     LOG.info("counters max="+ Limits.getCountersMax());
@@ -131,6 +133,7 @@ public class TestCounters {
   private void setExpected(Counters counters) {
     counters.findCounter(FRAMEWORK_COUNTER).setValue(FRAMEWORK_COUNTER_VALUE);
     counters.findCounter(FS_SCHEME, FS_COUNTER).setValue(FS_COUNTER_VALUE);
+    counters.findCounter(FS_SCHEME, FS_LOCAL_RACK_COUNTER).setValue(FS_LOCAL_RACK_COUNTER_VALUE);
   }
 
   private void checkExpected(Counters counters) {
@@ -138,6 +141,8 @@ public class TestCounters {
                  counters.findCounter(FRAMEWORK_COUNTER).getValue());
     assertEquals(FS_COUNTER_VALUE,
                  counters.findCounter(FS_SCHEME, FS_COUNTER).getValue());
+    assertEquals(FS_LOCAL_RACK_COUNTER_VALUE,
+                 counters.findCounter(FS_SCHEME, FS_LOCAL_RACK_COUNTER).getValue());
   }
 
   private void shouldThrow(Class<? extends Exception> ecls, Runnable runnable) {

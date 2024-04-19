@@ -3956,7 +3956,7 @@ public abstract class FileSystem extends Configured
       /**
        * Add another StatisticsData object to this one.
        */
-      void add(StatisticsData other) {
+      public void add(StatisticsData other) {
         this.bytesRead += other.bytesRead;
         this.bytesWritten += other.bytesWritten;
         this.readOps += other.readOps;

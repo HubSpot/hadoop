@@ -23,6 +23,10 @@ import org.apache.hadoop.classification.InterfaceAudience;
 @InterfaceAudience.Private
 public enum FileSystemCounter {
   BYTES_READ,
+  BYTES_READ_LOCAL_HOST,
+  BYTES_READ_LOCAL_RACK,
+  BYTES_READ_FIRST_DEGREE_REMOTE_RACK,
+  BYTES_READ_SECOND_OR_MORE_DEGREE_REMOTE_RACK,
   BYTES_WRITTEN,
   READ_OPS,
   LARGE_READ_OPS,
