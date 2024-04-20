@@ -1143,22 +1143,6 @@ abstract public class Task implements Writable, Configurable {
         readBytesCounter = counters.findCounter(scheme,
             FileSystemCounter.BYTES_READ);
       }
-      if (localHostReadBytesCounter == null) {
-        localHostReadBytesCounter = counters.findCounter(scheme,
-            FileSystemCounter.BYTES_READ_LOCAL_HOST);
-      }
-      if (localRackReadBytesCounter == null) {
-        localRackReadBytesCounter = counters.findCounter(scheme,
-            FileSystemCounter.BYTES_READ_LOCAL_RACK);
-      }
-      if (firstDegreeRemoteRackReadBytesCounter == null) {
-        firstDegreeRemoteRackReadBytesCounter = counters.findCounter(scheme,
-            FileSystemCounter.BYTES_READ_FIRST_DEGREE_REMOTE_RACK);
-      }
-      if (secondOrMoreDegreeRemoteRackReadBytesCounter == null) {
-        secondOrMoreDegreeRemoteRackReadBytesCounter = counters.findCounter(scheme,
-            FileSystemCounter.BYTES_READ_SECOND_OR_MORE_DEGREE_REMOTE_RACK);
-      }
       if (writeBytesCounter == null) {
         writeBytesCounter = counters.findCounter(scheme,
             FileSystemCounter.BYTES_WRITTEN);
@@ -1180,21 +1164,42 @@ abstract public class Task implements Writable, Configurable {
         readBytesEcCounter =
             counters.findCounter(scheme, FileSystemCounter.BYTES_READ_EC);
       }
+
       Statistics.StatisticsData data = new Statistics.StatisticsData();
       for (FileSystem.Statistics stat: stats) {
         data.add(stat.getData());
       }
+
       readBytesCounter.setValue(data.getBytesRead());
-      localHostReadBytesCounter.setValue(data.getBytesReadLocalHost());
-      localRackReadBytesCounter.setValue(data.getBytesReadDistanceOfOneOrTwo());
-      firstDegreeRemoteRackReadBytesCounter.setValue(data.getBytesReadDistanceOfThreeOrFour());
-      secondOrMoreDegreeRemoteRackReadBytesCounter.setValue(data.getBytesReadDistanceOfFiveOrLarger());
       writeBytesCounter.setValue(data.getBytesWritten());
       readOpsCounter.setValue(data.getReadOps());
       largeReadOpsCounter.setValue(data.getLargeReadOps());
       writeOpsCounter.setValue(data.getWriteOps());
       if (readBytesEcCounter != null) {
         readBytesEcCounter.setValue(data.getBytesReadErasureCoded());
+      }
+
+      if (data.hasNetworkDistanceData()) {
+        if (localHostReadBytesCounter == null) {
+          localHostReadBytesCounter = counters.findCounter(scheme,
+              FileSystemCounter.BYTES_READ_LOCAL_HOST);
+        }
+        if (localRackReadBytesCounter == null) {
+          localRackReadBytesCounter = counters.findCounter(scheme,
+              FileSystemCounter.BYTES_READ_LOCAL_RACK);
+        }
+        if (firstDegreeRemoteRackReadBytesCounter == null) {
+          firstDegreeRemoteRackReadBytesCounter = counters.findCounter(scheme,
+              FileSystemCounter.BYTES_READ_FIRST_DEGREE_REMOTE_RACK);
+        }
+        if (secondOrMoreDegreeRemoteRackReadBytesCounter == null) {
+          secondOrMoreDegreeRemoteRackReadBytesCounter = counters.findCounter(scheme,
+              FileSystemCounter.BYTES_READ_SECOND_OR_MORE_DEGREE_REMOTE_RACK);
+        }
+        localHostReadBytesCounter.setValue(data.getBytesReadLocalHost());
+        localRackReadBytesCounter.setValue(data.getBytesReadDistanceOfOneOrTwo());
+        firstDegreeRemoteRackReadBytesCounter.setValue(data.getBytesReadDistanceOfThreeOrFour());
+        secondOrMoreDegreeRemoteRackReadBytesCounter.setValue(data.getBytesReadDistanceOfFiveOrLarger());
       }
     }
   }

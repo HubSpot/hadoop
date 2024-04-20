@@ -4032,6 +4032,15 @@ public abstract class FileSystem extends Configured
         return bytesReadDistanceOfFiveOrLarger;
       }
 
+      public boolean hasNetworkDistanceData() {
+        return (
+                bytesReadLocalHost > 0 ||
+                bytesReadDistanceOfOneOrTwo > 0 ||
+                bytesReadDistanceOfThreeOrFour > 0 ||
+                bytesReadDistanceOfFiveOrLarger > 0
+                );
+      }
+
       public long getBytesReadErasureCoded() {
         return bytesReadErasureCoded;
       }
