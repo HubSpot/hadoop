@@ -3961,7 +3961,7 @@ public abstract class FileSystem extends Configured
       /**
        * Add another StatisticsData object to this one.
        */
-      void add(StatisticsData other) {
+      public void add(StatisticsData other) {
         this.bytesRead += other.bytesRead;
         this.bytesWritten += other.bytesWritten;
         this.readOps += other.readOps;
@@ -4037,6 +4037,15 @@ public abstract class FileSystem extends Configured
 
       public long getBytesReadDistanceOfFiveOrLarger() {
         return bytesReadDistanceOfFiveOrLarger;
+      }
+
+      public boolean hasNetworkDistanceData() {
+        return (
+                bytesReadLocalHost > 0 ||
+                bytesReadDistanceOfOneOrTwo > 0 ||
+                bytesReadDistanceOfThreeOrFour > 0 ||
+                bytesReadDistanceOfFiveOrLarger > 0
+                );
       }
 
       public long getBytesReadErasureCoded() {
