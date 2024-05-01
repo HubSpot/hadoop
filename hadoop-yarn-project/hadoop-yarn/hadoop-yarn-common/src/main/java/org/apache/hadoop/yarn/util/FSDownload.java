@@ -274,12 +274,18 @@ public class FSDownload implements Callable<Path> {
     FileSystem sourceFs = sCopy.getFileSystem(conf);
     FileStatus sStat = sourceFs.getFileStatus(sCopy);
     if (sStat.getModificationTime() != resource.getTimestamp()) {
-      throw new IOException("Resource " + sCopy + " changed on src filesystem" +
+      LOG.info("Resource " + sCopy + " changed on src filesystem" +
           " - expected: " +
           "\"" + Times.formatISO8601(resource.getTimestamp()) + "\"" +
           ", was: " +
           "\"" + Times.formatISO8601(sStat.getModificationTime()) + "\"" +
           ", current time: " + "\"" + Times.formatISO8601(Time.now()) + "\"");
+//      throw new IOException("Resource " + sCopy + " changed on src filesystem" +
+//          " - expected: " +
+//          "\"" + Times.formatISO8601(resource.getTimestamp()) + "\"" +
+//          ", was: " +
+//          "\"" + Times.formatISO8601(sStat.getModificationTime()) + "\"" +
+//          ", current time: " + "\"" + Times.formatISO8601(Time.now()) + "\"");
     }
     if (resource.getVisibility() == LocalResourceVisibility.PUBLIC) {
       if (!isPublic(sourceFs, sCopy, sStat, statCache)) {
