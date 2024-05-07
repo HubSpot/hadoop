@@ -1501,17 +1501,17 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
   @Override
   public Path makeQualified(final Path path) {
     Path q = super.makeQualified(path);
-    if (!q.isRoot()) {
-      String urlString = q.toUri().toString();
-      if (urlString.endsWith(Path.SEPARATOR)) {
-        // this is a path which needs root stripping off to avoid
-        // confusion, See HADOOP-15430
-        LOG.debug("Stripping trailing '/' from {}", q);
-        // deal with an empty "/" at the end by mapping to the parent and
-        // creating a new path from it
-        q = new Path(urlString.substring(0, urlString.length() - 1));
-      }
-    }
+//    if (!q.isRoot()) {
+//      String urlString = q.toUri().toString();
+//      if (urlString.endsWith(Path.SEPARATOR)) {
+//        // this is a path which needs root stripping off to avoid
+//        // confusion, See HADOOP-15430
+//        LOG.debug("Stripping trailing '/' from {}", q);
+//        // deal with an empty "/" at the end by mapping to the parent and
+//        // creating a new path from it
+//        q = new Path(urlString.substring(0, urlString.length() - 1));
+//      }
+//    }
     if (!q.isRoot() && q.getName().isEmpty()) {
       q = q.getParent();
     }
@@ -3720,7 +3720,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
       final String key,
       final Set<StatusProbeEnum> probes,
       final boolean needEmptyDirectoryFlag) throws IOException {
-    LOG.debug("S3GetFileStatus {}", path);
+    LOG.info("S3GetFileStatus {}", path);
     // either you aren't looking for the directory flag, or you are,
     // and if you are, the probe list must contain list.
     Preconditions.checkArgument(!needEmptyDirectoryFlag
@@ -3736,8 +3736,9 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
       try {
         // look for the simple file
         ObjectMetadata meta = getObjectMetadata(key);
-        LOG.debug("Found exact file: normal file {}", key);
+        LOG.info("Found exact file: normal file {}", key);
         long contentLength = meta.getContentLength();
+        LOG.info("contentLength {}", contentLength);
         // check if CSE is enabled, then strip padded length.
         if (isCSEEnabled
             && meta.getUserMetaDataOf(Headers.CRYPTO_CEK_ALGORITHM) != null
@@ -3757,6 +3758,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
         // But: an empty bucket is also a 404, so check for that
         // and fail.
         if (e.getStatusCode() != SC_404 || isUnknownBucket(e)) {
+          LOG.info("e.getStatusCode() in S3a filesystem : ",e.getStatusCode());
           throw translateException("getFileStatus", path, e);
         }
       } catch (AmazonClientException e) {
