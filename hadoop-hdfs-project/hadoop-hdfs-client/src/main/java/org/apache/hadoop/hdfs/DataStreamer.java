@@ -481,6 +481,8 @@ class DataStreamer extends Daemon {
     }
   }
 
+  private static final Pipeline CLOSED_PIPELINE = new Pipeline(null, null, null);
+
   private volatile boolean streamerClosed = false;
   protected final BlockToWrite block; // its length is number of bytes acked
   protected Token<BlockTokenIdentifier> accessToken;
@@ -618,12 +620,12 @@ class DataStreamer extends Daemon {
   }
 
   private void setPipeline(LocatedBlock lb) {
-    setPipeline(lb.getLocations(), lb.getStorageTypes(), lb.getStorageIDs());
+    Pipeline pipeline = new Pipeline(lb.getLocations(), lb.getStorageTypes(), lb.getStorageIDs());
+    setPipeline(pipeline);
   }
 
-  private void setPipeline(DatanodeInfo[] nodes, StorageType[] storageTypes,
-                           String[] storageIDs) {
-    this.pipeline.set(new Pipeline(nodes, storageTypes, storageIDs));
+  private void setPipeline(Pipeline pipeline) {
+    this.pipeline.set(pipeline);
   }
 
   /**
@@ -650,7 +652,7 @@ class DataStreamer extends Daemon {
     this.setName("DataStreamer for file " + src);
     closeResponder();
     closeStream();
-    setPipeline(null, null, null);
+    setPipeline(CLOSED_PIPELINE);
     stage = BlockConstructionStage.PIPELINE_SETUP_CREATE;
   }
 
@@ -1475,7 +1477,7 @@ class DataStreamer extends Daemon {
         caughtException = ioe;
         // add the allocated node to the exclude list.
         exclude.add(nodes[d]);
-        setPipeline(original, originalTypes, originalIDs);
+        setPipeline(new Pipeline(original, originalTypes, originalIDs));
         tried++;
         continue;
       }
@@ -1651,7 +1653,7 @@ class DataStreamer extends Daemon {
       final String[] newStorageIDs = new String[newnodes.length];
       arraycopy(pipeline.storageIDs, newStorageIDs, badNodeIndex);
 
-      setPipeline(newnodes, newStorageTypes, newStorageIDs);
+      setPipeline(new Pipeline(newnodes, newStorageTypes, newStorageIDs));
 
       errorState.adjustState4RestartingNode();
       lastException.clear();
