@@ -469,15 +469,25 @@ class DataStreamer extends Daemon {
     }
   }
 
+  static class Pipeline {
+    final DatanodeInfo[] nodes; // list of targets for current block
+    final StorageType[] storageTypes;
+    final String[] storageIDs;
+
+    Pipeline(DatanodeInfo[] nodes, StorageType[] storageTypes, String[] storageIDs) {
+      this.nodes = nodes;
+      this.storageTypes = storageTypes;
+      this.storageIDs = storageIDs;
+    }
+  }
+
   private volatile boolean streamerClosed = false;
   protected final BlockToWrite block; // its length is number of bytes acked
   protected Token<BlockTokenIdentifier> accessToken;
   private DataOutputStream blockStream;
   private DataInputStream blockReplyStream;
   private ResponseProcessor response = null;
-  private volatile DatanodeInfo[] nodes = null; // list of targets for current block
-  private volatile StorageType[] storageTypes = null;
-  private volatile String[] storageIDs = null;
+  private AtomicReference<Pipeline> pipeline;
   private final ErrorState errorState;
 
   private volatile BlockConstructionStage stage;  // block construction stage
@@ -597,7 +607,7 @@ class DataStreamer extends Daemon {
   void setPipelineInConstruction(LocatedBlock lastBlock) throws IOException{
     // setup pipeline to append to the last block XXX retries??
     setPipeline(lastBlock);
-    if (nodes.length < 1) {
+    if (pipeline.get().nodes.length < 1) {
       throw new IOException("Unable to retrieve blocks locations " +
           " for last block " + block + " of file " + src);
     }
@@ -613,9 +623,7 @@ class DataStreamer extends Daemon {
 
   private void setPipeline(DatanodeInfo[] nodes, StorageType[] storageTypes,
                            String[] storageIDs) {
-    this.nodes = nodes;
-    this.storageTypes = storageTypes;
-    this.storageIDs = storageIDs;
+    this.pipeline.set(new Pipeline(nodes, storageTypes, storageIDs));
   }
 
   /**
@@ -624,13 +632,14 @@ class DataStreamer extends Daemon {
   private void initDataStreaming() {
     this.setName("DataStreamer for file " + src +
         " block " + block);
+    Pipeline pipeline = this.pipeline.get();
     if (LOG.isDebugEnabled()) {
       LOG.debug("nodes {} storageTypes {} storageIDs {}",
-          Arrays.toString(nodes),
-          Arrays.toString(storageTypes),
-          Arrays.toString(storageIDs));
+          Arrays.toString(pipeline.nodes),
+          Arrays.toString(pipeline.storageTypes),
+          Arrays.toString(pipeline.storageIDs));
     }
-    response = new ResponseProcessor(nodes);
+    response = new ResponseProcessor(pipeline.nodes);
     response.start();
     stage = BlockConstructionStage.DATA_STREAMING;
     lastPacket = Time.monotonicNow();
@@ -910,6 +919,7 @@ class DataStreamer extends Daemon {
     try (TraceScope ignored = dfsClient.getTracer().
         newScope("waitForAckedSeqno")) {
       LOG.debug("{} waiting for ack for: {}", this, seqno);
+      DatanodeInfo[] nodes = pipeline.get().nodes;
       int dnodes = nodes != null ? nodes.length : 3;
       int writeTimeout = dfsClient.getDatanodeWriteTimeout(dnodes);
       long begin = Time.monotonicNow();
@@ -1086,6 +1096,7 @@ class DataStreamer extends Daemon {
    */
   boolean shouldWaitForRestart(int index) {
     // Only one node in the pipeline.
+    DatanodeInfo[] nodes = pipeline.get().nodes;
     if (nodes.length == 1) {
       return true;
     }
@@ -1344,6 +1355,7 @@ class DataStreamer extends Daemon {
 
   private int findNewDatanode(final DatanodeInfo[] original
   ) throws IOException {
+    DatanodeInfo[] nodes = pipeline.get().nodes;
     if (nodes.length != original.length + 1) {
       throw new IOException(
           "Failed to replace a bad datanode on the existing pipeline "
@@ -1399,9 +1411,12 @@ class DataStreamer extends Daemon {
     }
 
     int tried = 0;
-    final DatanodeInfo[] original = nodes;
-    final StorageType[] originalTypes = storageTypes;
-    final String[] originalIDs = storageIDs;
+    Pipeline pipeline = this.pipeline.get();
+    DatanodeInfo[] nodes = pipeline.nodes;
+    String[] storageIDs = pipeline.storageIDs;
+    final DatanodeInfo[] original = pipeline.nodes;
+    final StorageType[] originalTypes = pipeline.storageTypes;
+    final String[] originalIDs = pipeline.storageIDs;
     IOException caughtException = null;
     ArrayList<DatanodeInfo> exclude = new ArrayList<>(failed);
     while (tried < 3) {
@@ -1448,7 +1463,7 @@ class DataStreamer extends Daemon {
       //transfer replica. pick a source from the original nodes
       final DatanodeInfo src = original[tried % original.length];
       final DatanodeInfo[] targets = {nodes[d]};
-      final StorageType[] targetStorageTypes = {storageTypes[d]};
+      final StorageType[] targetStorageTypes = {pipeline.storageTypes[d]};
       final String[] targetStorageIDs = {storageIDs[d]};
 
       try {
@@ -1518,6 +1533,9 @@ class DataStreamer extends Daemon {
     // Check number of datanodes. Note that if there is no healthy datanode,
     // this must be internal error because we mark external error in striped
     // outputstream only when all the streamers are in the DATA_STREAMING stage
+    Pipeline pipeline = this.pipeline.get();
+    DatanodeInfo[] nodes = pipeline.nodes;
+
     if (nodes == null || nodes.length == 0) {
       String msg = "Could not get block locations. " + "Source file \""
           + src + "\" - Aborting..." + this;
@@ -1526,7 +1544,7 @@ class DataStreamer extends Daemon {
       streamerClosed = true;
       return;
     }
-    setupPipelineInternal(nodes, storageTypes, storageIDs);
+    setupPipelineInternal(nodes, pipeline.storageTypes, pipeline.storageIDs);
   }
 
   protected void setupPipelineInternal(DatanodeInfo[] datanodes,
@@ -1552,12 +1570,13 @@ class DataStreamer extends Daemon {
       accessToken = lb.getBlockToken();
 
       // set up the pipeline again with the remaining nodes
-      success = createBlockOutputStream(nodes, storageTypes, storageIDs, newGS,
+      Pipeline pipeline = this.pipeline.get();
+      success = createBlockOutputStream(pipeline.nodes, pipeline.storageTypes, pipeline.storageIDs, newGS,
           isRecovery);
 
       failPacket4Testing();
 
-      errorState.checkRestartingNodeDeadline(nodes);
+      errorState.checkRestartingNodeDeadline(pipeline.nodes);
     } // while
 
     if (success) {
@@ -1589,7 +1608,7 @@ class DataStreamer extends Daemon {
       } catch (InterruptedException ie) {
         lastException.set(new IOException(
             "Interrupted while waiting for restarting "
-            + nodes[errorState.getRestartingNodeIndex()]));
+            + pipeline.get().nodes[errorState.getRestartingNodeIndex()]));
         streamerClosed = true;
         return false;
       }
@@ -1602,6 +1621,8 @@ class DataStreamer extends Daemon {
    * @return true if it should continue.
    */
   boolean handleBadDatanode() {
+    final Pipeline pipeline = this.pipeline.get();
+    DatanodeInfo[] nodes = pipeline.nodes;
     final int badNodeIndex = errorState.getBadNodeIndex();
     if (badNodeIndex >= 0) {
       if (nodes.length <= 1) {
@@ -1625,10 +1646,10 @@ class DataStreamer extends Daemon {
       arraycopy(nodes, newnodes, badNodeIndex);
 
       final StorageType[] newStorageTypes = new StorageType[newnodes.length];
-      arraycopy(storageTypes, newStorageTypes, badNodeIndex);
+      arraycopy(pipeline.storageTypes, newStorageTypes, badNodeIndex);
 
       final String[] newStorageIDs = new String[newnodes.length];
-      arraycopy(storageIDs, newStorageIDs, badNodeIndex);
+      arraycopy(pipeline.storageIDs, newStorageIDs, badNodeIndex);
 
       setPipeline(newnodes, newStorageTypes, newStorageIDs);
 
@@ -1640,8 +1661,9 @@ class DataStreamer extends Daemon {
 
   /** Add a datanode if replace-datanode policy is satisfied. */
   private void handleDatanodeReplacement() throws IOException {
+    Pipeline pipeline = this.pipeline.get();
     if (dfsClient.dtpReplaceDatanodeOnFailure.satisfy(stat.getReplication(),
-        nodes, isAppend, isHflushed)) {
+        pipeline.nodes, isAppend, isHflushed)) {
       try {
         addDatanode2ExistingPipeline();
       } catch(IOException ioe) {
@@ -1686,8 +1708,9 @@ class DataStreamer extends Daemon {
     // the new GS has been propagated to all DN, it should be ok to update the
     // local block state
     updateBlockGS(newGS);
+    Pipeline pipeline = this.pipeline.get();
     dfsClient.namenode.updatePipeline(dfsClient.clientName, oldBlock,
-        block.getCurrentBlock(), nodes, storageIDs);
+        block.getCurrentBlock(), pipeline.nodes, pipeline.storageIDs);
   }
 
   DatanodeInfo[] getExcludedNodes() {
@@ -1965,11 +1988,11 @@ class DataStreamer extends Daemon {
    * @return the target datanodes in the pipeline
    */
   DatanodeInfo[] getNodes() {
-    return nodes;
+    return pipeline.get().nodes;
   }
 
   String[] getStorageIDs() {
-    return storageIDs;
+    return pipeline.get().storageIDs;
   }
 
   BlockConstructionStage getStage() {
