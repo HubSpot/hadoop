@@ -193,6 +193,9 @@ class JobSubmitter {
 
       copyAndConfigureFiles(job, submitJobDir);
 
+      Class<? extends PostResourceJobHook> postResourceHook = conf.getClass("post.resource.job.hook", DefaultPostResourceJobHook.class, PostResourceJobHook.class);
+      ReflectionUtils.newInstance(postResourceHook, conf).updateConfiguration(job);
+
       Path submitJobFile = JobSubmissionFiles.getJobConfPath(submitJobDir);
       
       // Create the splits for the job
