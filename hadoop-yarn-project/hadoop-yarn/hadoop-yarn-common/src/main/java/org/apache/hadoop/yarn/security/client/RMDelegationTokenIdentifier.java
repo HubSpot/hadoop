@@ -38,6 +38,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
 import org.apache.hadoop.yarn.client.ClientRMProxy;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.util.Records;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Delegation Token Identifier that identifies the delegation tokens from the 
@@ -48,6 +50,7 @@ import org.apache.hadoop.yarn.util.Records;
 public class RMDelegationTokenIdentifier extends YARNDelegationTokenIdentifier {
 
   public static final Text KIND_NAME = new Text("RM_DELEGATION_TOKEN");
+  private static final Logger LOG = LoggerFactory.getLogger(RMDelegationTokenIdentifier.class);
 
   public RMDelegationTokenIdentifier(){}
 
@@ -141,6 +144,22 @@ public class RMDelegationTokenIdentifier extends YARNDelegationTokenIdentifier {
         InetSocketAddress addr = NetUtils.createSocketAddr(service);
         if (localSecretManager != null) {
           // return null if it's our token
+          if (localServiceAddress.getAddress() == null) {
+            // If the domain name didn't resolve, try resolving and try again
+            LOG.warn("Local service address null for {}:{}, attempting recovery (unresolved status: {})",
+                    localServiceAddress.getHostName(),
+                    localServiceAddress.getPort(),
+                    localServiceAddress.isUnresolved());
+            InetSocketAddress recoveryAddress = NetUtils.createSocketAddr(
+                    localServiceAddress.getHostName(),
+                    localServiceAddress.getPort());
+            if (recoveryAddress.getAddress() == null) {
+              LOG.error("Recovery failed");
+            } else {
+              LOG.info("Recovery succeeded");
+              localServiceAddress = recoveryAddress;
+            }
+          }
           if (localServiceAddress.getAddress().isAnyLocalAddress()) {
             if (NetUtils.isLocalAddress(addr.getAddress()) &&
                 addr.getPort() == localServiceAddress.getPort()) {
