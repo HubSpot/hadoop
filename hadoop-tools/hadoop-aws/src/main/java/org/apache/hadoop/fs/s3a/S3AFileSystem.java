@@ -3756,6 +3756,7 @@ public class S3AFileSystem extends FileSystem implements StreamCapabilities,
         // no file at that path...the remaining checks will be needed.
         // But: an empty bucket is also a 404, so check for that
         // and fail.
+        LOG.info("Johnny printing message: {}, exception message: {}, content: {}", e.getMessage(), e.getErrorMessage(), e.getRawResponseContent());
         if (e.getStatusCode() != SC_404 || isUnknownBucket(e)) {
           throw translateException("getFileStatus", path, e);
         }
