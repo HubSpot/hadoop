@@ -14,7 +14,7 @@ printenv
 # The reason for this is hadoop re-branches for each patch release (3.3.1, 3.3.2, etc). At each re-branch
 # the histories diverge. So we'll need to create our own fork of each new patch release branch.
 # The convention is a fork named "hubspot-$patchVersion", and the maven coordinates "$patchVersion-hubspot-SNAPSHOT"
-PATCH_VERSION="3.3.6"
+PATCH_VERSION="1.0"
 MAIN_BRANCH="hubspot-${PATCH_VERSION}"
 
 # If we bump our hadoop build version, we should bump this as well
