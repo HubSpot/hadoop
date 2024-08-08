@@ -32,6 +32,7 @@ import java.util.regex.Pattern;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -274,7 +275,7 @@ public class FSDownload implements Callable<Path> {
     FileSystem sourceFs = sCopy.getFileSystem(conf);
     FileStatus sStat = sourceFs.getFileStatus(sCopy);
     if (sStat.getModificationTime() != resource.getTimestamp()) {
-      if(conf.get("hubspot.hadoop.file.system.type").equalsIgnoreCase("S3")){
+      if(!Strings.isNullOrEmpty(conf.get("hubspot.hadoop.file.system.type")) && conf.get("hubspot.hadoop.file.system.type").equalsIgnoreCase("S3")){
         LOG.info("Resource " + sCopy + " changed on src filesystem" +
             " - expected: " +
             "\"" + Times.formatISO8601(resource.getTimestamp()) + "\"" +
