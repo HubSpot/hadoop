@@ -61,6 +61,7 @@ import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Futures;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 
+import static org.apache.hadoop.fs.FileSystem.FS_DEFAULT_NAME_KEY;
 import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY;
 import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY_WHOLE_FILE;
 import static org.apache.hadoop.util.functional.FutureIO.awaitFuture;
@@ -275,7 +276,9 @@ public class FSDownload implements Callable<Path> {
     FileSystem sourceFs = sCopy.getFileSystem(conf);
     FileStatus sStat = sourceFs.getFileStatus(sCopy);
     if (sStat.getModificationTime() != resource.getTimestamp()) {
-      if(!Strings.isNullOrEmpty(conf.get("hubspot.hadoop.file.system.type")) && conf.get("hubspot.hadoop.file.system.type").equalsIgnoreCase("S3")){
+      //if the hadoop file system used is s3 then we skip the timestamp check.
+      if(conf.get(FS_DEFAULT_NAME_KEY) != null &&
+          conf.get(FS_DEFAULT_NAME_KEY).startsWith("s3a://")){
         LOG.info("Resource " + sCopy + " changed on src filesystem" +
             " - expected: " +
             "\"" + Times.formatISO8601(resource.getTimestamp()) + "\"" +
