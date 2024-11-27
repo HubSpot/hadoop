@@ -13,14 +13,13 @@ cache:
   - /root/.m2/repository
 
 enableBuildTargets:
-  - centos8_arm64
-  - centos8_amd64
+  - almalinux9_arm64
+  - almalinux9_amd64
 
 env:
   # Set this to an empty var so we can override with write-build-env-var below
   REPO_NAME: ""
-
-  BUILD_CONTAINER_IMAGE_CENTOS_8: "docker.hubteam.com/apache-hadoop-build-container/apache-hadoop-build-container:latest"
+  BUILD_CONTAINER_IMAGE_ALMA_LINUX: "docker.hubteam.com/apache-hadoop-build-container/apache-hadoop-build-container:latest"
   CONTAINER_TEMP_OUTPUT_DIR: /temporary_artifacts
   CONTAINER_RPMS_OUTPUT_DIR: /generated_rpms
 
