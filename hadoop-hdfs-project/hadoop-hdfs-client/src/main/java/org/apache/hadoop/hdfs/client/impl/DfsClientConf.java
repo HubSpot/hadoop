@@ -106,6 +106,7 @@ public class DfsClientConf {
                                                                 .class);
 
   private final int hdfsTimeout;    // timeout value for a DFS operation.
+  private final int leaseRenewalIntervalMs;
 
   private final int maxFailoverAttempts;
   private final int maxRetryAttempts;
@@ -168,7 +169,9 @@ public class DfsClientConf {
   public DfsClientConf(Configuration conf) {
     // The hdfsTimeout is currently the same as the ipc timeout
     hdfsTimeout = Client.getRpcTimeout(conf);
-
+    leaseRenewalIntervalMs = conf.getInt(
+        HdfsClientConfigKeys.DFS_CLIENT_LEASE_RENEWAL_INTERVAL_KEY,
+        HdfsClientConfigKeys.DFS_CLIENT_LEASE_RENEWAL_INTERVAL_DEFAULT);
     maxRetryAttempts = conf.getInt(
         Retry.MAX_ATTEMPTS_KEY,
         Retry.MAX_ATTEMPTS_DEFAULT);
@@ -181,7 +184,6 @@ public class DfsClientConf {
     retryIntervalForGetLastBlockLength = conf.getInt(
         Retry.INTERVAL_GET_LAST_BLOCK_LENGTH_KEY,
         Retry.INTERVAL_GET_LAST_BLOCK_LENGTH_DEFAULT);
-
     maxFailoverAttempts = conf.getInt(
         Failover.MAX_ATTEMPTS_KEY,
         Failover.MAX_ATTEMPTS_DEFAULT);
@@ -432,6 +434,10 @@ public class DfsClientConf {
    */
   public int getHdfsTimeout() {
     return hdfsTimeout;
+  }
+
+  public int getLeaseRenewalIntervalMs() {
+    return leaseRenewalIntervalMs;
   }
 
   /**
