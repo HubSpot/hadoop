@@ -20,7 +20,6 @@ package org.apache.hadoop.mapreduce;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -43,7 +42,6 @@ import org.apache.hadoop.mapreduce.util.ConfigUtil;
 import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.ReservationId;
-import org.apache.http.client.utils.URIBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -1679,19 +1677,6 @@ public class Job extends JobContextImpl implements JobContext, AutoCloseable {
       }
     });
     state = JobState.RUNNING;
-    LOG.info("The url to track the job: {}", getAdjustedTrackingUrl());
-   }
-
-  /**
-   * Adjust the tracking URL to conform with YARN sidecar proxy changes.
-   * @return Corrected YARN URL
-   */
-   private String getAdjustedTrackingUrl() {
-    try {
-      return new URIBuilder(getTrackingURL()).setScheme("https").setPort(-1).build().toString();
-    } catch (URISyntaxException e) {
-      return getTrackingURL();
-    }
    }
   
   /**
