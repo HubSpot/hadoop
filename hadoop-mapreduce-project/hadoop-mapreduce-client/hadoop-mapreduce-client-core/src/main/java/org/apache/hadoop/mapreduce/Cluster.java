@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -43,6 +42,7 @@ import org.apache.hadoop.mapreduce.v2.LogParams;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -122,7 +122,7 @@ public class Cluster {
           "Initializing cluster for Job Tracker=" + jobTrackAddr.toString());
     }
     for (ClientProtocolProvider provider : providerList) {
-      LOG.debug("Trying ClientProtocolProvider : "
+      LOG.info("Trying ClientProtocolProvider : "
           + provider.getClass().getName());
       ClientProtocol clientProtocol = null;
       try {
@@ -135,11 +135,11 @@ public class Cluster {
         if (clientProtocol != null) {
           clientProtocolProvider = provider;
           client = clientProtocol;
-          LOG.debug("Picked " + provider.getClass().getName()
+          LOG.info("Picked " + provider.getClass().getName()
               + " as the ClientProtocolProvider");
           break;
         } else {
-          LOG.debug("Cannot pick " + provider.getClass().getName()
+          LOG.info("Cannot pick " + provider.getClass().getName()
               + " as the ClientProtocolProvider - returned null protocol");
         }
       } catch (Exception e) {
