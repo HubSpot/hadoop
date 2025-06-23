@@ -127,6 +127,7 @@ public class Cluster {
       ClientProtocol clientProtocol = null;
       try {
         if (jobTrackAddr == null) {
+          LOG.info("johnny creating ClientProtocol with conf: \n{}\n", conf);
           clientProtocol = provider.create(conf);
         } else {
           clientProtocol = provider.create(jobTrackAddr, conf);

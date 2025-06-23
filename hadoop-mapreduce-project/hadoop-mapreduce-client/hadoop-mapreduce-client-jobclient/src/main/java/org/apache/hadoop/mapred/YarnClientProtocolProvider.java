@@ -25,11 +25,18 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocolProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class YarnClientProtocolProvider extends ClientProtocolProvider {
 
+  private static final Logger LOG =
+      LoggerFactory.getLogger(YarnClientProtocolProvider.class);
+
   @Override
   public ClientProtocol create(Configuration conf) throws IOException {
+    LOG.info("johnny right config name: {}", MRConfig.YARN_FRAMEWORK_NAME);
+    LOG.info("johnny current config name: {}", conf.get(MRConfig.FRAMEWORK_NAME));
     if (MRConfig.YARN_FRAMEWORK_NAME.equals(conf.get(MRConfig.FRAMEWORK_NAME))) {
       return new YARNRunner(conf);
     }
