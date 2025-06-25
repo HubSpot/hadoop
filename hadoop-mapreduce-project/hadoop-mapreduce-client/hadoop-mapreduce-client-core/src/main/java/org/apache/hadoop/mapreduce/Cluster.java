@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
@@ -111,6 +112,9 @@ public class Cluster {
   
   private void initialize(InetSocketAddress jobTrackAddr, Configuration conf)
       throws IOException {
+    LOG.info("johnny stack trace: \n");
+    Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
+        stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
 
     initProviderList();
     final IOException initEx = new IOException(
