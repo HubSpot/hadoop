@@ -18,12 +18,8 @@
 
 package org.apache.hadoop.conf;
 
-import com.ctc.wstx.api.ReaderConfig;
-import com.ctc.wstx.io.StreamBootstrapper;
-import com.ctc.wstx.io.SystemId;
-import com.ctc.wstx.stax.WstxInputFactory;
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonGenerator;
+import static org.apache.commons.lang3.StringUtils.isBlank;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
 
 import java.io.BufferedInputStream;
 import java.io.DataInput;
@@ -62,12 +58,12 @@ import java.util.StringTokenizer;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import javax.annotation.Nullable;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -82,15 +78,14 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 import org.apache.commons.collections.map.UnmodifiableMap;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.net.NetUtils;
@@ -98,21 +93,25 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProvider.CredentialEntry;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
 import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.XMLUtils;
-
 import org.codehaus.stax2.XMLStreamReader2;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
-import static org.apache.commons.lang3.StringUtils.isBlank;
-import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import com.ctc.wstx.api.ReaderConfig;
+import com.ctc.wstx.io.StreamBootstrapper;
+import com.ctc.wstx.io.SystemId;
+import com.ctc.wstx.stax.WstxInputFactory;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
 
 /**
  * Provides access to configuration parameters.
@@ -1025,6 +1024,9 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * via set methods will overlay values read from the resources.
    */
   public synchronized void reloadConfiguration() {
+    LOG.info("johnny resetting properties");
+    Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
+        stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
     properties = null;                            // trigger reload
     finalParameters.clear();                      // clear site-limits
   }
@@ -2901,6 +2903,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
 
   protected synchronized Properties getProps() {
     if (properties == null) {
+      LOG.info("johnny getting reset properties");
       properties = new Properties();
       loadProps(properties, 0, true);
     }
