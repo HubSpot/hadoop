@@ -242,6 +242,8 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   private boolean restrictSystemProps = restrictSystemPropsDefault;
   private boolean allowNullValueProperties = false;
 
+  private boolean printLogs = false;
+
   private static class Resource {
     private final Object resource;
     private final String name;
@@ -1013,6 +1015,10 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     addResourceObject(new Resource(conf.getProps(), conf.restrictSystemProps));
   }
 
+  public void setPrintLogs() {
+    this.printLogs = true;
+  }
+
   
   
   /**
@@ -1024,9 +1030,11 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * via set methods will overlay values read from the resources.
    */
   public synchronized void reloadConfiguration() {
-    LOG.info("johnny resetting properties");
-    Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
-        stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
+    if (printLogs) {
+      LOG.info("johnny resetting properties");
+      Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
+          stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
+    }
     properties = null;                            // trigger reload
     finalParameters.clear();                      // clear site-limits
   }
@@ -2903,7 +2911,11 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
 
   protected synchronized Properties getProps() {
     if (properties == null) {
-      LOG.info("johnny getting reset properties");
+      if (printLogs) {
+        LOG.info("johnny getting reset properties");
+        Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
+            stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
+      }
       properties = new Properties();
       loadProps(properties, 0, true);
     }
