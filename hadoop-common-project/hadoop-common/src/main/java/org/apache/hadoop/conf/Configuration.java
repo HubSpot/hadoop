@@ -1032,6 +1032,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   public synchronized void reloadConfiguration() {
     if (printLogs) {
       LOG.info("johnny resetting properties");
+      LOG.info("johnny current config name before resetting: {}", get("mapreduce.framework.name"));
       Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
           stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
     }
@@ -2912,12 +2913,16 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   protected synchronized Properties getProps() {
     if (properties == null) {
       if (printLogs) {
-        LOG.info("johnny getting reset properties");
+        LOG.info("johnny getting properties after resetting properties");
         Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
             stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
       }
       properties = new Properties();
       loadProps(properties, 0, true);
+
+      if (printLogs) {
+        LOG.info("johnny current config name after resetting: {}", get("mapreduce.framework.name"));
+      }
     }
     return properties;
   }

@@ -20,6 +20,7 @@ package org.apache.hadoop.mapred;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.Arrays;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.MRConfig;
@@ -37,6 +38,8 @@ public class YarnClientProtocolProvider extends ClientProtocolProvider {
   public ClientProtocol create(Configuration conf) throws IOException {
     LOG.info("johnny right config name: {}", MRConfig.YARN_FRAMEWORK_NAME);
     LOG.info("johnny current config name: {}", conf.get(MRConfig.FRAMEWORK_NAME));
+    Arrays.stream(Thread.currentThread().getStackTrace()).forEach(
+        stackTraceElement -> LOG.info("{}", stackTraceElement.toString()));
     if (MRConfig.YARN_FRAMEWORK_NAME.equals(conf.get(MRConfig.FRAMEWORK_NAME))) {
       return new YARNRunner(conf);
     }
