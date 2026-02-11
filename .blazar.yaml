@@ -4,6 +4,39 @@ buildpack:
 buildDeps:
   - jdk11
 
+containers:
+  - name: privileged
+    securityContext: privileged
+    user: hs-build
+    image: docker.hubteam.com/buildpacks/build-image-java:1879
+    mounts:
+      - type: bind
+        src: /etc/slimfast.properties
+        dst: /etc/slimfast.properties
+      - type: bind
+        src: /usr/share/hubspot/mesos/blazar_cache/maven
+        dst: /usr/share/hubspot/build/.m2/repository
+      - type: bind
+        src: /usr/share/hubspot/mesos/blazar_cache/gradle-enterprise
+        dst: /usr/share/hubspot/build/.m2/.gradle-enterprise
+  - name: unprivileged
+    securityContext: unprivileged
+    user: hs-build
+    image: docker.hubteam.com/buildpacks/build-image-java:1879
+    mounts:
+      - type: bind
+        src: /usr/share/hubspot/mesos/blazar_cache/maven
+        dst: /usr/share/hubspot/build/.m2/repository
+      - type: bind
+        src: /usr/share/hubspot/mesos/blazar_cache/gradle-enterprise
+        dst: /usr/share/hubspot/build/.m2/.gradle-enterprise
+      - type: bind
+        src: /blazar-docker-socket
+        dst: /blazar-docker-socket
+      - type: bind
+        src: /blazar-docker-socket
+        dst: /var/run/docker.sock
+
 # The build environment requires environment variables to be explicitly defined before they may
 # be modified by the `write-build-env-var` utilty script to persist changes to an environment variable
 # throughout a build
