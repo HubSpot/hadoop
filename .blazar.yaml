@@ -1,6 +1,9 @@
 buildpack:
   name: Blazar-Buildpack-Java-single-module
 
+buildDeps:
+  - jdk11
+
 # The build environment requires environment variables to be explicitly defined before they may
 # be modified by the `write-build-env-var` utilty script to persist changes to an environment variable
 # throughout a build
@@ -18,8 +21,5 @@ before:
   - description: "Prepare build environment"
     commands:
       - $WORKSPACE/build-scripts/prepare_environment.sh
-
-buildDeps:
-  - jdk11
 
 buildTimeoutOverrideMinutes: 60
