@@ -19,4 +19,7 @@ before:
     commands:
       - $WORKSPACE/build-scripts/prepare_environment.sh
 
+buildDeps:
+  - jdk11
+
 buildTimeoutOverrideMinutes: 60
