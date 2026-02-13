@@ -1,6 +1,5 @@
 buildpack:
   name: Blazar-Buildpack-Java-oss-fork
-  branch: js-build-image-java-ext
 
 # The build environment requires environment variables to be explicitly defined before they may
 # be modified by the `write-build-env-var` utilty script to persist changes to an environment variable
