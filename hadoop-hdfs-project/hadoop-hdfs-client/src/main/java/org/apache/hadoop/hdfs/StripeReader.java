@@ -307,9 +307,16 @@ abstract class StripeReader {
       }
 
       int ret = 0;
+      long beginReadMS = Time.monotonicNow();
       for (ByteBufferStrategy strategy : strategies) {
         int bytesReead = readToBuffer(reader, datanode, strategy, currentBlock, chunkIndex);
         ret += bytesReead;
+      }
+      long readTimeMS = Time.monotonicNow() - beginReadMS;
+      if (readTimeMS > dfsStripedInputStream.getDFSClient().getConf().getSlowIoWarningThresholdMs()) {
+        DFSClient.LOG.info("Slow HDFS ec-read: datanode={} duration_ms={} block={} src={}",
+            datanode.getXferAddr(), readTimeMS, currentBlock,
+            dfsStripedInputStream.getSrc());
       }
       return new BlockReadStats(ret, reader.isShortCircuit(),
           reader.getNetworkDistance());

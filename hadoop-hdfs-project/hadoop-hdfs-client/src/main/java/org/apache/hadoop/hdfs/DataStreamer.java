@@ -1143,13 +1143,16 @@ class DataStreamer extends Daemon {
           ack.readFields(blockReplyStream);
           if (ack.getSeqno() != DFSPacket.HEART_BEAT_SEQNO) {
             Long begin = packetSendTime.get(ack.getSeqno());
-            if (begin != null) {
-              long duration = Time.monotonicNow() - begin;
-              if (duration > dfsclientSlowLogThresholdMs) {
-                LOG.info("Slow ReadProcessor read fields for block " + block
-                    + " took " + duration + "ms (threshold="
-                    + dfsclientSlowLogThresholdMs + "ms); ack: " + ack
-                    + ", targets: " + Arrays.asList(targets));
+            long duration = begin != null ? Time.monotonicNow() - begin : -1L;
+            if (duration > 0 && duration > dfsclientSlowLogThresholdMs) {
+              // Replaced by per-datanode structured log below for consistency with read path slow logs.
+              // LOG.info("Slow ReadProcessor read fields for block " + block
+              //     + " took " + duration + "ms (threshold="
+              //     + dfsclientSlowLogThresholdMs + "ms); ack: " + ack
+              //     + ", targets: " + Arrays.asList(targets));
+              for (DatanodeInfo dn : targets) {
+                LOG.info("Slow HDFS write: datanode={} duration_ms={} block={}",
+                    dn.getXferAddr(), duration, block.getCurrentBlock());
               }
             }
           }
