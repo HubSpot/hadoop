@@ -315,7 +315,7 @@ abstract class StripeReader {
       long readTimeMS = Time.monotonicNow() - beginReadMS;
       if (readTimeMS > dfsStripedInputStream.getDFSClient().getConf().getSlowIoWarningThresholdMs()) {
         DFSClient.LOG.info("Slow HDFS ec-read: datanode={} duration_ms={} block={} src={}",
-            datanode.getXferAddr(), readTimeMS, currentBlock,
+            datanode.getHostName(), readTimeMS, currentBlock,
             dfsStripedInputStream.getSrc());
       }
       return new BlockReadStats(ret, reader.isShortCircuit(),

@@ -1197,7 +1197,7 @@ public class DFSInputStream extends FSInputStream
         long readTimeMS = Time.monotonicNow() - beginReadMS;
         if (readTimeMS > dfsClient.getConf().getSlowIoWarningThresholdMs()) {
           DFSClient.LOG.info("Slow HDFS read: datanode={} duration_ms={} block={} src={}",
-              datanode.info.getXferAddr(), readTimeMS, block.getBlock(), src);
+              datanode.info.getHostName(), readTimeMS, block.getBlock(), src);
         }
         buf.position(buf.position() + nread);
 

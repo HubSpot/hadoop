@@ -1150,10 +1150,20 @@ class DataStreamer extends Daemon {
               //     + " took " + duration + "ms (threshold="
               //     + dfsclientSlowLogThresholdMs + "ms); ack: " + ack
               //     + ", targets: " + Arrays.asList(targets));
-              for (DatanodeInfo dn : targets) {
-                LOG.info("Slow HDFS write: datanode={} duration_ms={} block={}",
-                    dn.getXferAddr(), duration, block.getCurrentBlock());
-              }
+              // the ack contains the time dn1 spent waiting for its downstream (dn2+dn3 combined).
+              // we use this to estimate which node was slowest: compare dn1's time against the
+              // average downstream per-node time, and log whichever is higher.
+              long downstreamPipelineDurationMs = ack.getDownstreamAckTimeNanos() / 1_000_000;
+              long headDatanodeDurationMs = duration - downstreamPipelineDurationMs;
+              long downstreamDatanodeCount = targets.length - 1;
+              long downstreamPerNodeDurationMs = downstreamDatanodeCount > 0
+                  ? downstreamPipelineDurationMs / downstreamDatanodeCount : 0;
+              DatanodeInfo likelySlowestDatanode = headDatanodeDurationMs >= downstreamPerNodeDurationMs
+                  ? targets[0] : targets[1];
+              long likelySlowestDurationMs = headDatanodeDurationMs >= downstreamPerNodeDurationMs
+                  ? headDatanodeDurationMs : downstreamPerNodeDurationMs;
+              LOG.info("Slow HDFS write: datanode={} duration_ms={} block={}",
+                  likelySlowestDatanode.getHostName(), likelySlowestDurationMs, block.getCurrentBlock());
             }
           }
 
