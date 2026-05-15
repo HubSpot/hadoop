@@ -133,7 +133,9 @@ public class DFSUtil {
 
   /**
    * Comparator for sorting DataNodeInfo[] based on
-   * decommissioned and entering_maintenance states.
+   * decommissioned, decommission_in_progress, and entering_maintenance states.
+   * Order: live -> entering_maintenance -> decommission_in_progress
+   *        -> decommissioned
    */
   public static class ServiceComparator implements Comparator<DatanodeInfo> {
     @Override
@@ -142,6 +144,15 @@ public class DFSUtil {
       if (a.isDecommissioned()) {
         return b.isDecommissioned() ? 0 : 1;
       } else if (b.isDecommissioned()) {
+        return -1;
+      }
+
+      // Decommissioning nodes are deprioritized to reduce read load on
+      // hardware that may be failing, while still remaining readable as a
+      // fallback when no healthy replica is available.
+      if (a.isDecommissionInProgress()) {
+        return b.isDecommissionInProgress() ? 0 : 1;
+      } else if (b.isDecommissionInProgress()) {
         return -1;
       }
 
@@ -158,9 +169,11 @@ public class DFSUtil {
 
   /**
    * Comparator for sorting DataNodeInfo[] based on
-   * slow, stale, entering_maintenance and decommissioned states.
+   * slow, stale, entering_maintenance, decommission_in_progress and
+   * decommissioned states.
    * Order: live {@literal ->} slow {@literal ->} stale {@literal ->}
-   * entering_maintenance {@literal ->} decommissioned
+   * entering_maintenance {@literal ->} decommission_in_progress
+   * {@literal ->} decommissioned
    */
   @InterfaceAudience.Private 
   public static class StaleAndSlowComparator extends ServiceComparator {

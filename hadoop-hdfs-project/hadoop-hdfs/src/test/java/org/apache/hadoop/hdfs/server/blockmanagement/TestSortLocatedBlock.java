@@ -291,6 +291,51 @@ public class TestSortLocatedBlock {
     return locs;
   }
 
+  /**
+   * Test that decommission-in-progress nodes are sorted behind live and
+   * entering-maintenance nodes, but before fully-decommissioned nodes.
+   *
+   * Input:
+   * d0 - decommissioned
+   * d1 - decommission_in_progress
+   * d2 - entering_maintenance
+   * d3 - live(in-service)
+   *
+   * Expected order after sorting:
+   * live -> entering_maintenance -> decommission_in_progress -> decommissioned
+   * (d3 -> d2 -> d1 -> d0)
+   */
+  @Test(timeout = 30000)
+  public void testDecommissionInProgressDeprioritized() throws IOException {
+    int totalDns = 4;
+    DatanodeInfo[] locs = new DatanodeInfo[totalDns];
+
+    for (int i = 0; i < totalDns; i++) {
+      String ip = i + "." + i + "." + i + "." + i;
+      locs[i] = DFSTestUtil.getDatanodeInfo(ip);
+      locs[i].setLastUpdateMonotonic(Time.monotonicNow());
+    }
+    locs[0].setDecommissioned();
+    locs[1].startDecommission();
+    locs[2].startMaintenance();
+    // locs[3] is live
+
+    ArrayList<LocatedBlock> locatedBlocks = new ArrayList<>();
+    locatedBlocks.add(new LocatedBlock(
+        new ExtendedBlock("pool", Long.MIN_VALUE,
+            1024L, new Date().getTime()), locs));
+
+    DatanodeManager dm = mockDatanodeManager(false, false);
+    dm.sortLocatedBlocks(null, locatedBlocks);
+
+    DatanodeInfoWithStorage[] locations = locatedBlocks.get(0).getLocations();
+
+    assertEquals(locs[3].getIpAddr(), locations[0].getIpAddr());
+    assertEquals(locs[2].getIpAddr(), locations[1].getIpAddr());
+    assertEquals(locs[1].getIpAddr(), locations[2].getIpAddr());
+    assertEquals(locs[0].getIpAddr(), locations[3].getIpAddr());
+  }
+
   private static DatanodeManager mockDatanodeManager(
       boolean avoidStaleDNForRead, boolean avoidSlowDNForRead)
       throws IOException {
