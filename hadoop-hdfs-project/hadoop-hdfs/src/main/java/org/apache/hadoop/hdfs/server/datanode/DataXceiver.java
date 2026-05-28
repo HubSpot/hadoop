@@ -631,7 +631,8 @@ class DataXceiver extends Receiver implements Runnable {
       } else {
         IOUtils.closeStream(out);
       }
-      datanode.metrics.incrBytesRead((int) read);
+      datanode.metrics.incrBytesRead(read);
+      datanode.metrics.incrBytesReadByClient(read);
       datanode.metrics.incrBlocksRead();
       datanode.metrics.incrTotalReadTime(TimeUnit.NANOSECONDS.toMillis(durationInNS));
       DFSUtil.addTransferRateMetric(datanode.metrics, read, durationInNS);
@@ -959,6 +960,11 @@ class DataXceiver extends Receiver implements Runnable {
     //update metrics
     datanode.getMetrics().addWriteBlockOp(elapsed());
     datanode.getMetrics().incrWritesFromClient(peer.isLocal(), size);
+    if (isClient) {
+      datanode.getMetrics().incrBytesWrittenByClient(size);
+    } else if (isDatanode) {
+      datanode.getMetrics().incrBytesReplicated(block.getNumBytes());
+    }
   }
 
   @Override
@@ -1121,11 +1127,11 @@ class DataXceiver extends Receiver implements Runnable {
       long read = blockSender.sendBlock(reply, baseStream,
                                         dataXceiverServer.balanceThrottler);
       long durationInNS = Time.monotonicNowNanos() - beginReadInNS;
-      datanode.metrics.incrBytesRead((int) read);
+      datanode.metrics.incrBytesRead(read);
       datanode.metrics.incrBlocksRead();
       datanode.metrics.incrTotalReadTime(TimeUnit.NANOSECONDS.toMillis(durationInNS));
       DFSUtil.addTransferRateMetric(datanode.metrics, read, durationInNS);
-      
+
       LOG.info("Copied {} to {}", block, peer.getRemoteAddressString());
     } catch (IOException ioe) {
       isOpSuccess = false;
@@ -1246,9 +1252,10 @@ class DataXceiver extends Receiver implements Runnable {
             CachingStrategy.newDropBehind(), false, false, storageId));
         
         // receive a block
-        blockReceiver.receiveBlock(null, null, replyOut, null, 
+        blockReceiver.receiveBlock(null, null, replyOut, null,
             dataXceiverServer.balanceThrottler, null, true);
-        
+        datanode.metrics.incrBytesBalanced(block.getNumBytes());
+
         // notify name node
         final Replica r = blockReceiver.getReplica();
         datanode.notifyNamenodeReceivedBlock(

@@ -80,6 +80,14 @@ public class DataNodeMetrics {
   MutableCounterLong remoteBytesRead;
   @Metric("Bytes written by remote client")
   MutableCounterLong remoteBytesWritten;
+  @Metric("Bytes received from another DataNode during block replication")
+  MutableCounterLong bytesReplicated;
+  @Metric("Bytes received from Balancer during block balancing")
+  MutableCounterLong bytesBalanced;
+  @Metric("Bytes served to clients via readBlock")
+  MutableCounterLong bytesReadByClient;
+  @Metric("Bytes received from clients via writeBlock")
+  MutableCounterLong bytesWrittenByClient;
 
   // RamDisk metrics on read/write
   @Metric MutableCounterLong ramDiskBlocksWrite;
@@ -361,8 +369,24 @@ public class DataNodeMetrics {
     blockChecksumOp.add(latency);
   }
 
-  public void incrBytesRead(int delta) {
+  public void incrBytesRead(long delta) {
     bytesRead.incr(delta);
+  }
+
+  public void incrBytesReplicated(long delta) {
+    bytesReplicated.incr(delta);
+  }
+
+  public void incrBytesBalanced(long delta) {
+    bytesBalanced.incr(delta);
+  }
+
+  public void incrBytesReadByClient(long delta) {
+    bytesReadByClient.incr(delta);
+  }
+
+  public void incrBytesWrittenByClient(long delta) {
+    bytesWrittenByClient.incr(delta);
   }
 
   public void incrBlocksRead() {
