@@ -503,7 +503,9 @@ public class DatanodeManager {
   }
 
   private boolean isInactive(DatanodeInfo datanode) {
-    return datanode.isDecommissioned() || datanode.isEnteringMaintenance() ||
+    return datanode.isDecommissioned() ||
+        datanode.isDecommissionInProgress() ||
+        datanode.isEnteringMaintenance() ||
         (avoidStaleDataNodesForRead && datanode.isStale(staleInterval));
   }
 
@@ -532,7 +534,7 @@ public class DatanodeManager {
   /**
    * Sort the non-striped located blocks by the distance to the target host.
    *
-   * For striped blocks, it will only move decommissioned/stale/slow
+   * For striped blocks, it will only move decommissioned/decommissioning/stale/slow
    * nodes to the bottom. For example, assume we have storage list:
    * d0, d1, d2, d3, d4, d5, d6, d7, d8, d9
    * mapping to block indices:
@@ -562,7 +564,7 @@ public class DatanodeManager {
   }
 
   /**
-   * Move decommissioned/entering_maintenance/stale/slow
+   * Move decommissioned/decommissioning/entering_maintenance/stale/slow
    * datanodes to the bottom. After sorting it will
    * update block indices and block tokens respectively.
    *
@@ -580,7 +582,8 @@ public class DatanodeManager {
       locToIndex.put(di[i], lsb.getBlockIndices()[i]);
       locToToken.put(di[i], lsb.getBlockTokens()[i]);
     }
-    // Move decommissioned/stale datanodes to the bottom
+    // Arrange the order of datanodes as follows:
+    // live(in-service) -> stale -> entering_maintenance -> decommissioning -> decommissioned
     Arrays.sort(di, comparator);
 
     // must update cache since we modified locations array
@@ -594,7 +597,7 @@ public class DatanodeManager {
   }
 
   /**
-   * Move decommissioned/entering_maintenance/stale/slow
+   * Move decommissioned/decommissioning/entering_maintenance/stale/slow
    * datanodes to the bottom. Also, sort nodes by network
    * distance.
    *
@@ -626,8 +629,8 @@ public class DatanodeManager {
     }
 
     DatanodeInfoWithStorage[] di = lb.getLocations();
-    // Move decommissioned/entering_maintenance/stale/slow
-    // datanodes to the bottom
+    // Arrange the order of datanodes as follows:
+    // live(in-service) -> stale -> entering_maintenance -> decommissioning -> decommissioned
     Arrays.sort(di, comparator);
 
     // Sort nodes by network distance only for located blocks
