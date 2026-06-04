@@ -156,9 +156,12 @@ public abstract class FileOutputFormat<K, V> extends OutputFormat<K, V> {
       throw new InvalidJobConfException("Output directory not set.");
     }
 
-    // get delegation token for outDir's file system
-    TokenCache.obtainTokensForNamenodes(job.getCredentials(),
-        new Path[] { outDir }, job.getConfiguration());
+    // only get delegation token for non-S3 file system
+    if (!outDir.toString().startsWith("s3")) {
+      // get delegation token for outDir's file system
+      TokenCache.obtainTokensForNamenodes(job.getCredentials(),
+          new Path[] { outDir }, job.getConfiguration());
+    }
 
     if (outDir.getFileSystem(job.getConfiguration()).exists(outDir)) {
       throw new FileAlreadyExistsException("Output directory " + outDir + 
