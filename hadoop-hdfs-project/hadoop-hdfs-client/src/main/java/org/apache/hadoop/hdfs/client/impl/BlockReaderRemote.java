@@ -473,4 +473,9 @@ public class BlockReaderRemote implements BlockReader {
   public int getNetworkDistance() {
     return networkDistance;
   }
+
+  @Override
+  public boolean isVerifyChecksum() {
+    return verifyChecksum;
+  }
 }

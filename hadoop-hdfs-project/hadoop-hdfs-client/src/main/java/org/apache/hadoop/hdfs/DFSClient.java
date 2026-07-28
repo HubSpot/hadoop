@@ -245,6 +245,8 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
 
   private static final DFSHedgedReadMetrics HEDGED_READ_METRIC =
       new DFSHedgedReadMetrics();
+  private static final DFSChecksumReadMetrics CHECKSUM_READ_METRICS =
+      new DFSChecksumReadMetrics();
   private static ThreadPoolExecutor HEDGED_READ_THREAD_POOL;
   private static volatile ThreadPoolExecutor STRIPED_READ_THREAD_POOL;
   private static volatile ByteBufferPool STRIPED_READ_BUFFER_POOL;
@@ -3152,6 +3154,10 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
 
   DFSHedgedReadMetrics getHedgedReadMetrics() {
     return HEDGED_READ_METRIC;
+  }
+
+  public static DFSChecksumReadMetrics getChecksumReadMetrics() {
+    return CHECKSUM_READ_METRICS;
   }
 
   @Override
