@@ -23,6 +23,7 @@ import java.util.EnumSet;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.ByteBufferReadable;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.ReadOption;
 import org.apache.hadoop.hdfs.shortcircuit.ClientMmap;
 import org.apache.hadoop.util.DataChecksum;
@@ -107,4 +108,17 @@ public interface BlockReader extends ByteBufferReadable, Closeable {
    * Return the network distance between local machine and the remote machine.
    */
   int getNetworkDistance();
+
+  /**
+   * @return              true if this reader is verifying checksums for the
+   *                      data it returns, false if checksum verification is
+   *                      being skipped for this read (e.g. because the
+   *                      stream was opened via
+   *                      {@link FileSystem#setVerifyChecksum} with a value
+   *                      of false, or short-circuit checksum skipping is
+   *                      configured).
+   */
+  default boolean isVerifyChecksum() {
+    return true;
+  }
 }

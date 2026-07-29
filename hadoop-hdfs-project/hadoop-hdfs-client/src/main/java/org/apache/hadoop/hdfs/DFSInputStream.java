@@ -860,6 +860,8 @@ public class DFSInputStream extends FSInputStream
             throw new IOException("Unexpected EOS from the reader");
           }
           updateReadStatistics(readStatistics, result, blockReader);
+          IOUtilsClient.updateChecksumReadStatistics(readStatistics, src,
+              result, verifyChecksum, blockReader);
           dfsClient.updateFileSystemReadStats(blockReader.getNetworkDistance(),
               result);
           if (readStatistics.getBlockType() == BlockType.STRIPED) {
@@ -1196,6 +1198,8 @@ public class DFSInputStream extends FSInputStream
         buf.position(buf.position() + nread);
 
         IOUtilsClient.updateReadStatistics(readStatistics, nread, reader);
+        IOUtilsClient.updateChecksumReadStatistics(readStatistics, src,
+            nread, verifyChecksum, reader);
         dfsClient.updateFileSystemReadStats(
             reader.getNetworkDistance(), nread);
         if (readStatistics.getBlockType() == BlockType.STRIPED) {

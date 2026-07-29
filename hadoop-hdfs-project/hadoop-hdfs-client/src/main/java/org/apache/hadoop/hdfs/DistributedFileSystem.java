@@ -245,6 +245,20 @@ public class DistributedFileSystem extends FileSystem
   }
 
   /**
+   * Returns the process-wide checksum read metrics, correlating
+   * short-circuit reads with whether checksum verification was performed.
+   * Useful for verifying that a no-checksum read path (e.g.
+   * {@link #setVerifyChecksum(boolean)} set to false) is actually being
+   * honored, and for quantifying short-circuit and checksum-skip
+   * efficiency.
+   *
+   * @return object of DFSChecksumReadMetrics
+   */
+  public DFSChecksumReadMetrics getChecksumReadMetrics() {
+    return DFSClient.getChecksumReadMetrics();
+  }
+
+  /**
    * Checks that the passed URI belongs to this filesystem and returns
    * just the path component. Expects a URI with an absolute path.
    *

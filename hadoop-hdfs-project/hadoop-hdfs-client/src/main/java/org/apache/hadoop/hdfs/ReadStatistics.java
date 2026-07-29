@@ -27,6 +27,8 @@ public class ReadStatistics {
   private long totalLocalBytesRead;
   private long totalShortCircuitBytesRead;
   private long totalZeroCopyBytesRead;
+  private long totalChecksumVerifiedBytesRead;
+  private long totalChecksumSkippedBytesRead;
 
   private BlockType blockType = BlockType.CONTIGUOUS;
   private long totalEcDecodingTimeMillis;
@@ -40,6 +42,8 @@ public class ReadStatistics {
     this.totalLocalBytesRead = rhs.getTotalLocalBytesRead();
     this.totalShortCircuitBytesRead = rhs.getTotalShortCircuitBytesRead();
     this.totalZeroCopyBytesRead = rhs.getTotalZeroCopyBytesRead();
+    this.totalChecksumVerifiedBytesRead = rhs.getTotalChecksumVerifiedBytesRead();
+    this.totalChecksumSkippedBytesRead = rhs.getTotalChecksumSkippedBytesRead();
   }
 
   /**
@@ -78,6 +82,24 @@ public class ReadStatistics {
    */
   public synchronized long getRemoteBytesRead() {
     return totalBytesRead - totalLocalBytesRead;
+  }
+
+  /**
+   * @return The total number of bytes read for which checksums were
+   * verified by the client (i.e. checksum verification was not skipped).
+   */
+  public synchronized long getTotalChecksumVerifiedBytesRead() {
+    return totalChecksumVerifiedBytesRead;
+  }
+
+  /**
+   * @return The total number of bytes read for which checksum
+   * verification was skipped, either because the stream was opened with
+   * verifyChecksum=false or because short-circuit checksum skipping is
+   * configured on the read path.
+   */
+  public synchronized long getTotalChecksumSkippedBytesRead() {
+    return totalChecksumSkippedBytesRead;
   }
 
   /**
@@ -121,6 +143,14 @@ public class ReadStatistics {
     this.totalEcDecodingTimeMillis += millis;
   }
 
+  public synchronized void addChecksumVerifiedBytes(long amt) {
+    this.totalChecksumVerifiedBytesRead += amt;
+  }
+
+  public synchronized void addChecksumSkippedBytes(long amt) {
+    this.totalChecksumSkippedBytesRead += amt;
+  }
+
   synchronized void setBlockType(BlockType blockType) {
     this.blockType = blockType;
   }
@@ -130,6 +160,8 @@ public class ReadStatistics {
     this.totalLocalBytesRead = 0;
     this.totalShortCircuitBytesRead = 0;
     this.totalZeroCopyBytesRead = 0;
+    this.totalChecksumVerifiedBytesRead = 0;
+    this.totalChecksumSkippedBytesRead = 0;
     this.totalEcDecodingTimeMillis = 0;
   }
 }
