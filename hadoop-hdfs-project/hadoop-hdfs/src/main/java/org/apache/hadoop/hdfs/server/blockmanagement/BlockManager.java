@@ -1657,6 +1657,40 @@ public class BlockManager implements BlockStatsMXBean {
     }
   }
 
+  /**
+   * Generate block tokens for every block in the given {@link LocatedBlocks}.
+   *
+   * <p>This is intended to be called <em>after</em> the FSNamesystem lock has
+   * been released. Block token generation computes an HMAC per block (and one
+   * per internal block for striped/erasure-coded files); this is pure CPU work
+   * that reads only the immutable {@link LocatedBlock} snapshot and the
+   * (independently synchronized) block token secret manager, so it does not
+   * require the namesystem lock. Doing it under the read lock only lengthens
+   * the critical section and increases lock contention, so callers on hot read
+   * paths (e.g. {@code getBlockLocations}) build the locations under the lock
+   * and defer token generation to this method once the lock is dropped.
+   *
+   * @see #setBlockToken(LocatedBlock, AccessMode)
+   */
+  public void setBlockTokens(LocatedBlocks blocks, AccessMode mode)
+      throws IOException {
+    if (!isBlockTokenEnabled() || blocks == null) {
+      return;
+    }
+    List<LocatedBlock> locatedBlocks = blocks.getLocatedBlocks();
+    if (locatedBlocks != null) {
+      for (LocatedBlock lb : locatedBlocks) {
+        setBlockToken(lb, mode);
+      }
+    }
+    // The last block is tracked separately from the main list and, when
+    // present, is a distinct LocatedBlock instance that also needs a token.
+    LocatedBlock lastBlock = blocks.getLastLocatedBlock();
+    if (lastBlock != null) {
+      setBlockToken(lastBlock, mode);
+    }
+  }
+
   void addKeyUpdateCommand(final List<DatanodeCommand> cmds,
       final DatanodeDescriptor nodeinfo) {
     // check access key update

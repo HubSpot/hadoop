@@ -2195,8 +2195,14 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       readLock();
       try {
         checkOperation(OperationCategory.READ);
+        // Build the located blocks under the lock, but do NOT generate block
+        // tokens here. Token generation is an HMAC-per-block computation (one
+        // per internal block for striped files) that does not need the
+        // namesystem lock; generating it under the lock only lengthens the
+        // read-lock critical section and drives lock contention. Tokens are
+        // generated after the lock is released (see setBlockTokens below).
         res = FSDirStatAndListingOp.getBlockLocations(
-            dir, pc, srcArg, offset, length, true);
+            dir, pc, srcArg, offset, length, false);
         inode = res.getIIp().getLastINode();
         if (isInSafeMode()) {
           for (LocatedBlock b : res.blocks.getLocatedBlocks()) {
@@ -2253,6 +2259,12 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         LOG.warn("Failed to update the access time of " + src, e);
       }
     }
+
+    // Generate block tokens now that the namesystem lock has been released,
+    // keeping the per-block HMAC computation out of the read-lock critical
+    // section (see BlockManager#setBlockTokens).
+    blockManager.setBlockTokens(res.blocks,
+        BlockTokenIdentifier.AccessMode.READ);
 
     LocatedBlocks blocks = res.blocks;
     sortLocatedBlocks(clientMachine, blocks);
