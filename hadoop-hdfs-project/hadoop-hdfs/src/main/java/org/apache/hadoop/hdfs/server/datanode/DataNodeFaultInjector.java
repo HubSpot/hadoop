@@ -110,6 +110,27 @@ public class DataNodeFaultInjector {
   public void delayBlockReader() {}
 
   /**
+   * HubSpot Edit: no upstream equivalent. Lets a test delay the client-facing
+   * read path of one specific DataNode, simulating a node that is slow but
+   * still alive -- the case that stalls erasure coded reads, since each
+   * internal block of a stripe lives on exactly one node. Used to exercise
+   * latency-triggered reconstruction; see HubSpotStripedReadHedge.
+   *
+   * @param datanodeUuid the UUID of the DataNode serving the read, so a test
+   *                     can target a single node
+   */
+  public void delayReadBlock(String datanodeUuid) {}
+
+  /**
+   * HubSpot Edit: test-only hook, a no-op in production. Delays the data
+   * transfer of a client read <em>after</em> the read has been accepted and the
+   * success header sent, so only the asynchronous transfer is slow. Contrast
+   * with {@link #delayReadBlock}, which delays the read before the header is
+   * sent.
+   */
+  public void delayBlockTransfer(String datanodeUuid) {}
+
+  /**
    * Used as a hook to inject intercept when free the block reader buffer.
    */
   public void interceptFreeBlockReaderBuffer() {}
