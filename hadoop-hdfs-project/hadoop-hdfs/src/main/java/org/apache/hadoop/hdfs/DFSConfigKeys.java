@@ -940,6 +940,46 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.decommission.backoff.monitor.pending.blocks.per.lock";
   public static final int DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_BLOCKS_PER_LOCK_DEFAULT
       = 1000;
+  // HubSpot: adaptive decommission pacing for HubSpotDatanodeAdminBackoffMonitor.
+  // When enabled, the effective pending replication limit is scaled between the
+  // min and max limits below based on NameNode load (RPC call-queue length), so
+  // decommission-driven replication runs aggressively when the NameNode is healthy
+  // and backs off when it is busy serving foreground traffic.
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED
+      = "dfs.namenode.decommission.backoff.monitor.adaptive.enabled";
+  public static final boolean
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED_DEFAULT = false;
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT
+      = "dfs.namenode.decommission.backoff.monitor.min.pending.limit";
+  public static final int
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT_DEFAULT = 100;
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT
+      = "dfs.namenode.decommission.backoff.monitor.max.pending.limit";
+  public static final int
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT_DEFAULT = 10000;
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH
+      = "dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.length";
+  public static final int
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH_DEFAULT = 100;
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH
+      = "dfs.namenode.decommission.backoff.monitor.busy.rpc.queue.length";
+  public static final int
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH_DEFAULT = 1000;
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS
+      = "dfs.namenode.decommission.backoff.monitor.busy.rpc.processing.time.ms";
+  public static final long
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS_DEFAULT = -1;
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS
+      = "dfs.namenode.decommission.backoff.monitor.max.low.redundancy.blocks";
+  public static final long
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS_DEFAULT = -1;
   public static final String  DFS_NAMENODE_HANDLER_COUNT_KEY = "dfs.namenode.handler.count";
   public static final int     DFS_NAMENODE_HANDLER_COUNT_DEFAULT = 10;
   public static final String  DFS_NAMENODE_LIFELINE_HANDLER_RATIO_KEY =

@@ -441,4 +441,111 @@ public class DatanodeAdminManager {
         key + " = '" + val + "' is invalid. " +
             "It should be a positive, non-zero integer value.");
   }
+
+  private void ensureDisabledOrPositive(long val, String key) {
+    checkArgument(
+        (val == -1 || val > 0),
+        key + " = '" + val + "' is invalid. " +
+            "It should be -1 (disabled) or a positive, non-zero value.");
+  }
+
+  // HubSpot: runtime-reconfigurable knobs for the adaptive decommission monitor.
+  // These only apply when the configured monitor is a
+  // HubSpotDatanodeAdminBackoffMonitor; otherwise they raise an
+  // IllegalArgumentException that the NameNode surfaces as a
+  // ReconfigurationException.
+
+  private HubSpotDatanodeAdminBackoffMonitor requireHubSpotMonitor(String key) {
+    if (!(monitor instanceof HubSpotDatanodeAdminBackoffMonitor)) {
+      throw new IllegalArgumentException(key
+          + " can only be reconfigured when "
+          + DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MONITOR_CLASS + " is "
+          + HubSpotDatanodeAdminBackoffMonitor.class.getName()
+          + ", but the active monitor is " + monitor.getClass().getName());
+    }
+    return (HubSpotDatanodeAdminBackoffMonitor) monitor;
+  }
+
+  public void refreshDecommissionAdaptiveEnabled(boolean enabled, String key) {
+    requireHubSpotMonitor(key).setAdaptiveEnabled(enabled);
+  }
+
+  @VisibleForTesting
+  public boolean getDecommissionAdaptiveEnabled() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED)
+        .isAdaptiveEnabled();
+  }
+
+  public void refreshDecommissionMinPendingLimit(int val, String key) {
+    ensurePositiveInt(val, key);
+    requireHubSpotMonitor(key).setMinPendingLimit(val);
+  }
+
+  @VisibleForTesting
+  public int getDecommissionMinPendingLimit() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT)
+        .getMinPendingLimit();
+  }
+
+  public void refreshDecommissionMaxPendingLimit(int val, String key) {
+    ensurePositiveInt(val, key);
+    requireHubSpotMonitor(key).setMaxPendingLimit(val);
+  }
+
+  @VisibleForTesting
+  public int getDecommissionMaxPendingLimit() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT)
+        .getMaxPendingLimit();
+  }
+
+  public void refreshDecommissionHealthyRpcQueueLength(int val, String key) {
+    ensurePositiveInt(val, key);
+    requireHubSpotMonitor(key).setHealthyRpcQueueLength(val);
+  }
+
+  @VisibleForTesting
+  public int getDecommissionHealthyRpcQueueLength() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH)
+        .getHealthyRpcQueueLength();
+  }
+
+  public void refreshDecommissionBusyRpcQueueLength(int val, String key) {
+    ensurePositiveInt(val, key);
+    requireHubSpotMonitor(key).setBusyRpcQueueLength(val);
+  }
+
+  @VisibleForTesting
+  public int getDecommissionBusyRpcQueueLength() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH)
+        .getBusyRpcQueueLength();
+  }
+
+  public void refreshDecommissionBusyRpcProcessingTimeMs(long val, String key) {
+    ensureDisabledOrPositive(val, key);
+    requireHubSpotMonitor(key).setBusyRpcProcessingTimeMs(val);
+  }
+
+  @VisibleForTesting
+  public long getDecommissionBusyRpcProcessingTimeMs() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS)
+        .getBusyRpcProcessingTimeMs();
+  }
+
+  public void refreshDecommissionMaxLowRedundancyBlocks(long val, String key) {
+    ensureDisabledOrPositive(val, key);
+    requireHubSpotMonitor(key).setMaxLowRedundancyBlocks(val);
+  }
+
+  @VisibleForTesting
+  public long getDecommissionMaxLowRedundancyBlocks() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS)
+        .getMaxLowRedundancyBlocks();
+  }
 }

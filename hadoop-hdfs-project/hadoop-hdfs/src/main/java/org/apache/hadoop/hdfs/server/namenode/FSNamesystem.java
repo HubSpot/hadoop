@@ -6750,6 +6750,43 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     this.blockManager = bm;
   }
 
+  /**
+   * HubSpot: reference to the client RPC server, wired up by
+   * {@code NameNode.initialize} once both objects exist. Used to expose
+   * NameNode load signals (e.g. to the adaptive decommission monitor) without
+   * threading a NameNode reference through the block-management layer. May be
+   * null before wiring completes or on nodes that never start a client RPC
+   * server, so all readers must null-check.
+   */
+  private volatile Server clientRpcServer;
+
+  public void setClientRpcServer(Server clientRpcServer) {
+    this.clientRpcServer = clientRpcServer;
+  }
+
+  /**
+   * @return the current length of the client RPC call queue, or -1 if the RPC
+   *         server is not (yet) wired up.
+   */
+  public long getRpcCallQueueLength() {
+    Server server = clientRpcServer;
+    return server == null ? -1 : server.getCallQueueLen();
+  }
+
+  /**
+   * @return the rolling mean RPC processing time in milliseconds, or -1 if the
+   *         RPC server is not wired up or no samples have been recorded in the
+   *         current metrics interval.
+   */
+  public long getAvgRpcProcessingTimeMs() {
+    Server server = clientRpcServer;
+    if (server == null || server.getRpcMetrics() == null
+        || server.getRpcMetrics().getProcessingSampleCount() == 0) {
+      return -1;
+    }
+    return (long) server.getRpcMetrics().getProcessingMean();
+  }
+
   /** @return the FSDirectory. */
   @Override
   public FSDirectory getFSDirectory() {

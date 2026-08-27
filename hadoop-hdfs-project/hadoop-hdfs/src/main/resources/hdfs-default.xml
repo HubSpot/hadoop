@@ -1164,6 +1164,97 @@
 </property>
 
 <property>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.enabled</name>
+  <value>false</value>
+  <description>
+    HubSpot: only used when dfs.namenode.decommission.monitor.class is set to
+    org.apache.hadoop.hdfs.server.blockmanagement.HubSpotDatanodeAdminBackoffMonitor.
+    When true, the pending replication limit is scaled dynamically each monitor
+    tick between the min and max limits below based on NameNode load, so
+    decommission-driven replication runs aggressively when the NameNode is
+    healthy and backs off when it is busy. When false, the monitor behaves
+    exactly like the stock backoff monitor and uses
+    dfs.namenode.decommission.backoff.monitor.pending.limit. This property is
+    reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.min.pending.limit</name>
+  <value>100</value>
+  <description>
+    HubSpot: the floor for the adaptive pending replication limit, applied when
+    the NameNode is considered busy. Must be greater than zero so decommission
+    never fully stalls. Only used by HubSpotDatanodeAdminBackoffMonitor with
+    adaptive pacing enabled. Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.max.pending.limit</name>
+  <value>10000</value>
+  <description>
+    HubSpot: the ceiling for the adaptive pending replication limit, applied
+    when the NameNode is considered healthy. Defaults to the same value as
+    dfs.namenode.decommission.backoff.monitor.pending.limit so that a healthy
+    NameNode behaves like the stock backoff monitor. Only used by
+    HubSpotDatanodeAdminBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.length</name>
+  <value>100</value>
+  <description>
+    HubSpot: the client RPC call-queue length at or below which the NameNode is
+    considered healthy and the effective pending limit ramps to the configured
+    maximum. Between this and the busy threshold the limit is interpolated
+    linearly. Only used by HubSpotDatanodeAdminBackoffMonitor with adaptive
+    pacing enabled. Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.busy.rpc.queue.length</name>
+  <value>1000</value>
+  <description>
+    HubSpot: the client RPC call-queue length at or above which the NameNode is
+    considered busy and the effective pending limit is clamped to the configured
+    minimum. Must be greater than
+    dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.length. Only used
+    by HubSpotDatanodeAdminBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.busy.rpc.processing.time.ms</name>
+  <value>-1</value>
+  <description>
+    HubSpot: optional secondary gate. When set to a positive value, if the
+    NameNode's rolling mean RPC processing time in milliseconds reaches this
+    threshold the effective pending limit is forced to the minimum regardless of
+    call-queue length. A value of -1 disables this gate. Only used by
+    HubSpotDatanodeAdminBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.max.low.redundancy.blocks</name>
+  <value>-1</value>
+  <description>
+    HubSpot: optional safety ceiling. When set to a positive value, if the count
+    of low-redundancy blocks (minus the blocks currently pending reconstruction,
+    a proxy for the monitor's own in-flight work) exceeds this threshold the
+    effective pending limit is forced to the minimum. A value of -1 disables this
+    cap. Only used by HubSpotDatanodeAdminBackoffMonitor with adaptive pacing
+    enabled. Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.redundancy.interval.seconds</name>
   <value>3</value>
   <description>The periodicity in seconds with which the namenode computes 
