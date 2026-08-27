@@ -56,6 +56,10 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.SlowPeerTracker;
 import org.apache.hadoop.hdfs.server.namenode.sps.StoragePolicySatisfyManager;
 import org.apache.hadoop.hdfs.server.protocol.OutlierMetrics;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminBackoffMonitor;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminMonitorInterface;
+import org.apache.hadoop.hdfs.server.blockmanagement.HubSpotDatanodeAdminBackoffMonitor;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
 
@@ -74,6 +78,13 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_BLOCKPLACEMENTPO
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_MAX_SLOWPEER_COLLECT_NODES_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_BLOCKS_PER_LOCK;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS;
 import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_BACKOFF_ENABLE_DEFAULT;
 
 public class TestNameNodeReconfigure {
@@ -860,6 +871,83 @@ public class TestNameNodeReconfigure {
     assertFalse(datanodeManager.isSlowPeerCollectorInitialized());
     // set to the value of the current system
     assertEquals(600000, datanodeManager.getSlowPeerCollectionInterval());
+  }
+
+  @Test
+  public void testReconfigureDecommissionAdaptiveMonitorParameters()
+      throws ReconfigurationException, IOException {
+    Configuration conf = new HdfsConfiguration();
+    conf.setClass(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MONITOR_CLASS,
+        HubSpotDatanodeAdminBackoffMonitor.class, DatanodeAdminMonitorInterface.class);
+
+    try (MiniDFSCluster newCluster = new MiniDFSCluster.Builder(conf).build()) {
+      newCluster.waitActive();
+      final NameNode nameNode = newCluster.getNameNode();
+      final DatanodeAdminManager adminManager = nameNode.namesystem.getBlockManager()
+          .getDatanodeManager().getDatanodeAdminManager();
+
+      // adaptive.enabled defaults to false and can be flipped on at runtime.
+      assertFalse(adminManager.getDecommissionAdaptiveEnabled());
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED, "true");
+      assertTrue(adminManager.getDecommissionAdaptiveEnabled());
+
+      // positive int thresholds propagate to the running monitor.
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, "50000");
+      assertEquals(50000, adminManager.getDecommissionMaxPendingLimit());
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, "250");
+      assertEquals(250, adminManager.getDecommissionMinPendingLimit());
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH, "50");
+      assertEquals(50, adminManager.getDecommissionHealthyRpcQueueLength());
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH, "2000");
+      assertEquals(2000, adminManager.getDecommissionBusyRpcQueueLength());
+
+      // the -1-capable long knobs accept -1 (disabled) and positive values.
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS, "75");
+      assertEquals(75, adminManager.getDecommissionBusyRpcProcessingTimeMs());
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS, "-1");
+      assertEquals(-1, adminManager.getDecommissionMaxLowRedundancyBlocks());
+
+      // invalid values are rejected.
+      try {
+        nameNode.reconfigureProperty(
+            DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, "0");
+        fail("Should not reach here");
+      } catch (ReconfigurationException e) {
+        // expected: min limit must be positive.
+      }
+      try {
+        nameNode.reconfigureProperty(
+            DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, "non-numeric");
+        fail("Should not reach here");
+      } catch (ReconfigurationException e) {
+        // expected: not an integer.
+      }
+    }
+  }
+
+  @Test
+  public void testReconfigureAdaptiveParametersRejectedForDefaultMonitor()
+      throws IOException {
+    // The adaptive knobs are only valid for HubSpotDatanodeAdminBackoffMonitor.
+    Configuration conf = new HdfsConfiguration();
+    try (MiniDFSCluster newCluster = new MiniDFSCluster.Builder(conf).build()) {
+      newCluster.waitActive();
+      final NameNode nameNode = newCluster.getNameNode();
+      try {
+        nameNode.reconfigureProperty(
+            DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, "50000");
+        fail("Should not reach here");
+      } catch (ReconfigurationException e) {
+        // expected: the active monitor is not the adaptive HubSpot monitor.
+      }
+    }
   }
 
   @After
