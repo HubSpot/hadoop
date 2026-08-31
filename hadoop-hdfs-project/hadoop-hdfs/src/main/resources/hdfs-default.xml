@@ -1231,7 +1231,7 @@
   <value>false</value>
   <description>
     HubSpot: only used when dfs.namenode.decommission.monitor.class is set to
-    org.apache.hadoop.hdfs.server.blockmanagement.HubSpotDatanodeAdminBackoffMonitor.
+    org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminAdaptiveBackoffMonitor.
     When true, the pending replication limit is scaled dynamically each monitor
     tick between the min and max limits below based on NameNode load, so
     decommission-driven replication runs aggressively when the NameNode is
@@ -1248,7 +1248,7 @@
   <description>
     HubSpot: the floor for the adaptive pending replication limit, applied when
     the NameNode is considered busy. Must be greater than zero so decommission
-    never fully stalls. Only used by HubSpotDatanodeAdminBackoffMonitor with
+    never fully stalls. Only used by DatanodeAdminAdaptiveBackoffMonitor with
     adaptive pacing enabled. Reconfigurable at runtime.
   </description>
 </property>
@@ -1261,7 +1261,7 @@
     when the NameNode is considered healthy. Defaults to the same value as
     dfs.namenode.decommission.backoff.monitor.pending.limit so that a healthy
     NameNode behaves like the stock backoff monitor. Only used by
-    HubSpotDatanodeAdminBackoffMonitor with adaptive pacing enabled.
+    DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
     Reconfigurable at runtime.
   </description>
 </property>
@@ -1273,7 +1273,7 @@
     HubSpot: the client RPC call-queue length at or below which the NameNode is
     considered healthy and the effective pending limit ramps to the configured
     maximum. Between this and the busy threshold the limit is interpolated
-    linearly. Only used by HubSpotDatanodeAdminBackoffMonitor with adaptive
+    linearly. Only used by DatanodeAdminAdaptiveBackoffMonitor with adaptive
     pacing enabled. Reconfigurable at runtime.
   </description>
 </property>
@@ -1286,7 +1286,7 @@
     considered busy and the effective pending limit is clamped to the configured
     minimum. Must be greater than
     dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.length. Only used
-    by HubSpotDatanodeAdminBackoffMonitor with adaptive pacing enabled.
+    by DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
     Reconfigurable at runtime.
   </description>
 </property>
@@ -1299,7 +1299,7 @@
     NameNode's rolling mean RPC processing time in milliseconds reaches this
     threshold the effective pending limit is forced to the minimum regardless of
     call-queue length. A value of -1 disables this gate. Only used by
-    HubSpotDatanodeAdminBackoffMonitor with adaptive pacing enabled.
+    DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
     Reconfigurable at runtime.
   </description>
 </property>
@@ -1312,7 +1312,7 @@
     of low-redundancy blocks (minus the blocks currently pending reconstruction,
     a proxy for the monitor's own in-flight work) exceeds this threshold the
     effective pending limit is forced to the minimum. A value of -1 disables this
-    cap. Only used by HubSpotDatanodeAdminBackoffMonitor with adaptive pacing
+    cap. Only used by DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing
     enabled. Reconfigurable at runtime.
   </description>
 </property>
