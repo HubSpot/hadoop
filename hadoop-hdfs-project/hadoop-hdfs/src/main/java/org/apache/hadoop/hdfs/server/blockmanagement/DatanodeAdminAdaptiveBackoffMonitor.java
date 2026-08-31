@@ -45,11 +45,11 @@ import org.slf4j.LoggerFactory;
  * {@link DatanodeAdminBackoffMonitor}. All thresholds are runtime-reconfigurable
  * via {@code hdfs dfsadmin -reconfig}.
  */
-public class HubSpotDatanodeAdminBackoffMonitor
+public class DatanodeAdminAdaptiveBackoffMonitor
     extends DatanodeAdminBackoffMonitor {
 
   private static final Logger LOG =
-      LoggerFactory.getLogger(HubSpotDatanodeAdminBackoffMonitor.class);
+      LoggerFactory.getLogger(DatanodeAdminAdaptiveBackoffMonitor.class);
 
   /** Master switch. When false, behaves like the stock backoff monitor. */
   private volatile boolean adaptiveEnabled;
@@ -66,7 +66,7 @@ public class HubSpotDatanodeAdminBackoffMonitor
   /** Low-redundancy block ceiling forcing the floor; &lt; 0 disables the cap. */
   private volatile long maxLowRedundancyBlocks;
 
-  HubSpotDatanodeAdminBackoffMonitor() {
+  DatanodeAdminAdaptiveBackoffMonitor() {
   }
 
   @Override

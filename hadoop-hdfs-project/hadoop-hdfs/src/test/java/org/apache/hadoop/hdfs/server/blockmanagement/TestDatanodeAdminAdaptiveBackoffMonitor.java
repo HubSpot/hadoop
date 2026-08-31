@@ -30,10 +30,10 @@ import static org.mockito.Mockito.when;
 
 /**
  * HubSpot: pure-unit tests for the adaptive pacing logic of
- * {@link HubSpotDatanodeAdminBackoffMonitor}. These exercise the load-to-limit
+ * {@link DatanodeAdminAdaptiveBackoffMonitor}. These exercise the load-to-limit
  * mapping and the {@code run()} wiring directly, without a MiniDFSCluster.
  */
-public class TestHubSpotDatanodeAdminBackoffMonitor {
+public class TestDatanodeAdminAdaptiveBackoffMonitor {
 
   private static final int MIN = 100;
   private static final int MAX = 10000;
@@ -57,10 +57,10 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
     return conf;
   }
 
-  private HubSpotDatanodeAdminBackoffMonitor newMonitor(Configuration conf,
+  private DatanodeAdminAdaptiveBackoffMonitor newMonitor(Configuration conf,
       FSNamesystem fsn) {
-    HubSpotDatanodeAdminBackoffMonitor monitor =
-        new HubSpotDatanodeAdminBackoffMonitor();
+    DatanodeAdminAdaptiveBackoffMonitor monitor =
+        new DatanodeAdminAdaptiveBackoffMonitor();
     monitor.setBlockManager(mock(BlockManager.class));
     if (fsn != null) {
       monitor.setNameSystem(fsn);
@@ -71,21 +71,21 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
 
   @Test
   public void testHealthyReturnsMax() {
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(baseConf(), null);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
     assertEquals(MAX, m.computeEffectivePendingLimit(0, -1, -1));
     assertEquals(MAX, m.computeEffectivePendingLimit(HEALTHY_Q, -1, -1));
   }
 
   @Test
   public void testBusyReturnsMin() {
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(baseConf(), null);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
     assertEquals(MIN, m.computeEffectivePendingLimit(BUSY_Q, -1, -1));
     assertEquals(MIN, m.computeEffectivePendingLimit(BUSY_Q * 10L, -1, -1));
   }
 
   @Test
   public void testInterpolationIsMonotonicallyDecreasing() {
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(baseConf(), null);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
     int prev = Integer.MAX_VALUE;
     for (long q = HEALTHY_Q; q <= BUSY_Q; q += 100) {
       int effective = m.computeEffectivePendingLimit(q, -1, -1);
@@ -106,7 +106,7 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
     conf.setLong(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS,
         50);
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(conf, null);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
     // Healthy queue would give MAX, but the processing-time gate trips.
     assertEquals(MIN, m.computeEffectivePendingLimit(0, 60, -1));
     // Below the threshold it has no effect.
@@ -119,7 +119,7 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
     conf.setLong(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS,
         1000);
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(conf, null);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
     assertEquals(MIN, m.computeEffectivePendingLimit(0, -1, 2000));
     assertEquals(MAX, m.computeEffectivePendingLimit(0, -1, 500));
   }
@@ -131,7 +131,7 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
     conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH,
         HEALTHY_Q);
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(conf, null);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
     assertFalse("adaptive pacing should be disabled on invalid thresholds",
         m.isAdaptiveEnabled());
   }
@@ -141,7 +141,7 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
     Configuration conf = baseConf();
     conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, 0);
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(conf, null);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
     assertEquals(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT_DEFAULT,
         m.getMinPendingLimit());
@@ -157,7 +157,7 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
     FSNamesystem fsn = mock(FSNamesystem.class);
     when(fsn.isRunning()).thenReturn(false); // short-circuit super.run()
     when(fsn.getRpcCallQueueLength()).thenReturn(0L); // healthy
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(conf, fsn);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, fsn);
     m.run();
     assertEquals(9000, m.getPendingRepLimit());
   }
@@ -171,7 +171,7 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 7777);
     FSNamesystem fsn = mock(FSNamesystem.class);
     when(fsn.isRunning()).thenReturn(false);
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(conf, fsn);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, fsn);
     m.run();
     assertEquals(7777, m.getPendingRepLimit());
   }
@@ -184,7 +184,7 @@ public class TestHubSpotDatanodeAdminBackoffMonitor {
     FSNamesystem fsn = mock(FSNamesystem.class);
     when(fsn.isRunning()).thenReturn(false);
     when(fsn.getRpcCallQueueLength()).thenReturn(-1L); // not wired yet
-    HubSpotDatanodeAdminBackoffMonitor m = newMonitor(conf, fsn);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, fsn);
     m.run();
     assertEquals(7777, m.getPendingRepLimit());
   }

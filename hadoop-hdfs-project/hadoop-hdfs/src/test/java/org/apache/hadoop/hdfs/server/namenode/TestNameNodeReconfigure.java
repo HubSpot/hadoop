@@ -59,7 +59,7 @@ import org.apache.hadoop.hdfs.server.protocol.OutlierMetrics;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminBackoffMonitor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminMonitorInterface;
-import org.apache.hadoop.hdfs.server.blockmanagement.HubSpotDatanodeAdminBackoffMonitor;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminAdaptiveBackoffMonitor;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
 
@@ -878,7 +878,7 @@ public class TestNameNodeReconfigure {
       throws ReconfigurationException, IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setClass(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MONITOR_CLASS,
-        HubSpotDatanodeAdminBackoffMonitor.class, DatanodeAdminMonitorInterface.class);
+        DatanodeAdminAdaptiveBackoffMonitor.class, DatanodeAdminMonitorInterface.class);
 
     try (MiniDFSCluster newCluster = new MiniDFSCluster.Builder(conf).build()) {
       newCluster.waitActive();
@@ -935,7 +935,7 @@ public class TestNameNodeReconfigure {
   @Test
   public void testReconfigureAdaptiveParametersRejectedForDefaultMonitor()
       throws IOException {
-    // The adaptive knobs are only valid for HubSpotDatanodeAdminBackoffMonitor.
+    // The adaptive knobs are only valid for DatanodeAdminAdaptiveBackoffMonitor.
     Configuration conf = new HdfsConfiguration();
     try (MiniDFSCluster newCluster = new MiniDFSCluster.Builder(conf).build()) {
       newCluster.waitActive();

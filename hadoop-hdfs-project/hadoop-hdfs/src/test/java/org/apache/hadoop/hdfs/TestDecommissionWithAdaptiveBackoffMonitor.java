@@ -21,25 +21,25 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.blockmanagement
     .DatanodeAdminMonitorInterface;
 import org.apache.hadoop.hdfs.server.blockmanagement
-    .HubSpotDatanodeAdminBackoffMonitor;
+    .DatanodeAdminAdaptiveBackoffMonitor;
 import org.junit.Test;
 
 import java.io.IOException;
 
 /**
  * HubSpot: runs the full decommission test suite against the adaptive
- * {@link HubSpotDatanodeAdminBackoffMonitor} with adaptive pacing enabled, to
+ * {@link DatanodeAdminAdaptiveBackoffMonitor} with adaptive pacing enabled, to
  * confirm decommission still completes end-to-end. Mirrors
  * {@link TestDecommissionWithBackoffMonitor}.
  */
-public class TestDecommissionWithHubSpotBackoffMonitor extends TestDecommission {
+public class TestDecommissionWithAdaptiveBackoffMonitor extends TestDecommission {
 
   @Override
   public void setup() throws IOException {
     super.setup();
     Configuration conf = getConf();
     conf.setClass(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MONITOR_CLASS,
-        HubSpotDatanodeAdminBackoffMonitor.class,
+        DatanodeAdminAdaptiveBackoffMonitor.class,
         DatanodeAdminMonitorInterface.class);
     conf.setBoolean(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED,
