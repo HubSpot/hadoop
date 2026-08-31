@@ -451,19 +451,19 @@ public class DatanodeAdminManager {
 
   // HubSpot: runtime-reconfigurable knobs for the adaptive decommission monitor.
   // These only apply when the configured monitor is a
-  // HubSpotDatanodeAdminBackoffMonitor; otherwise they raise an
+  // DatanodeAdminAdaptiveBackoffMonitor; otherwise they raise an
   // IllegalArgumentException that the NameNode surfaces as a
   // ReconfigurationException.
 
-  private HubSpotDatanodeAdminBackoffMonitor requireHubSpotMonitor(String key) {
-    if (!(monitor instanceof HubSpotDatanodeAdminBackoffMonitor)) {
+  private DatanodeAdminAdaptiveBackoffMonitor requireHubSpotMonitor(String key) {
+    if (!(monitor instanceof DatanodeAdminAdaptiveBackoffMonitor)) {
       throw new IllegalArgumentException(key
           + " can only be reconfigured when "
           + DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MONITOR_CLASS + " is "
-          + HubSpotDatanodeAdminBackoffMonitor.class.getName()
+          + DatanodeAdminAdaptiveBackoffMonitor.class.getName()
           + ", but the active monitor is " + monitor.getClass().getName());
     }
-    return (HubSpotDatanodeAdminBackoffMonitor) monitor;
+    return (DatanodeAdminAdaptiveBackoffMonitor) monitor;
   }
 
   public void refreshDecommissionAdaptiveEnabled(boolean enabled, String key) {

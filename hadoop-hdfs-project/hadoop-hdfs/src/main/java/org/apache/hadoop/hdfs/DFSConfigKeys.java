@@ -940,7 +940,7 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.decommission.backoff.monitor.pending.blocks.per.lock";
   public static final int DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_BLOCKS_PER_LOCK_DEFAULT
       = 1000;
-  // HubSpot: adaptive decommission pacing for HubSpotDatanodeAdminBackoffMonitor.
+  // HubSpot: adaptive decommission pacing for DatanodeAdminAdaptiveBackoffMonitor.
   // When enabled, the effective pending replication limit is scaled between the
   // min and max limits below based on NameNode load (RPC call-queue length), so
   // decommission-driven replication runs aggressively when the NameNode is healthy
