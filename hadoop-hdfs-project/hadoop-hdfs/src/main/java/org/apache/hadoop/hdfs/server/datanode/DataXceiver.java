@@ -575,6 +575,9 @@ class DataXceiver extends Receiver implements Runnable {
       final CachingStrategy cachingStrategy) throws IOException {
     previousOpClientName = clientName;
     long read = 0;
+    // HubSpot Edit: test-only hook, a no-op in production, allowing one
+    // DataNode's client reads to be delayed. See HubSpotStripedReadHedge.
+    DataNodeFaultInjector.get().delayReadBlock(datanode.getDatanodeUuid());
     updateCurrentThreadName("Sending block " + block);
     OutputStream baseStream = getOutputStream();
     DataOutputStream out = getBufferedOutputStream();
@@ -607,6 +610,10 @@ class DataXceiver extends Receiver implements Runnable {
       
       // send op status
       writeSuccessWithChecksumInfo(blockSender, new DataOutputStream(getOutputStream()));
+      // HubSpot Edit: test-only hook, a no-op in production. The success
+      // header is now sent, so a delay here is purely transfer-phase latency.
+      DataNodeFaultInjector.get().delayBlockTransfer(
+          datanode.getDatanodeUuid());
 
       long beginReadInNS = Time.monotonicNowNanos();
       read = blockSender.sendBlock(out, baseStream, null); // send data
