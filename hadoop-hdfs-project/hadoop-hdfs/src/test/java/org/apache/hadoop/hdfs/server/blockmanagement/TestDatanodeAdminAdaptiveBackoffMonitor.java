@@ -148,6 +148,30 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
   }
 
   @Test
+  public void testMaxLimitInheritsConfiguredPendingLimitWhenUnset() {
+    Configuration conf = baseConf();
+    // Do not set max.pending.limit; tune the parent's pending.limit above the
+    // stock 10000. The ceiling must inherit that tuned value, not a constant,
+    // so enabling adaptive pacing never lowers peak throughput.
+    conf.unset(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT);
+    conf.setInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 50000);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
+    assertEquals(50000, m.getMaxPendingLimit());
+  }
+
+  @Test
+  public void testExplicitMaxLimitOverridesPendingLimit() {
+    Configuration conf = baseConf();
+    conf.setInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, 8000);
+    conf.setInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 50000);
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
+    assertEquals(8000, m.getMaxPendingLimit());
+  }
+
+  @Test
   public void testRunAppliesLimitWhenEnabled() {
     Configuration conf = baseConf();
     conf.setInt(

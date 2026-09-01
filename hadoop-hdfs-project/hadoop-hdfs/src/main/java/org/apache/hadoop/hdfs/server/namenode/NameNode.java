@@ -2853,8 +2853,13 @@ public class NameNode extends ReconfigurableBase implements
         adminManager.refreshDecommissionMinPendingLimit(val, property);
         newSetting = String.valueOf(adminManager.getDecommissionMinPendingLimit());
       } else if (property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT)) {
-        int val = (newVal == null ? DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT_DEFAULT
+        // On reset, fall back to the configured pending.limit (matching the
+        // monitor's startup default) rather than a hardcoded constant, so a
+        // reset never silently caps the healthy-state ceiling below a tuned
+        // pending.limit.
+        int val = (newVal == null
+            ? getConf().getInt(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT,
+                DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT_DEFAULT)
             : Integer.parseInt(newVal));
         adminManager.refreshDecommissionMaxPendingLimit(val, property);
         newSetting = String.valueOf(adminManager.getDecommissionMaxPendingLimit());
