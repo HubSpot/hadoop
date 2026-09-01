@@ -1195,9 +1195,11 @@
   <value>10000</value>
   <description>
     HubSpot: the ceiling for the adaptive pending replication limit, applied
-    when the NameNode is considered healthy. Defaults to the same value as
-    dfs.namenode.decommission.backoff.monitor.pending.limit so that a healthy
-    NameNode behaves like the stock backoff monitor. Only used by
+    when the NameNode is considered healthy. When unset, it inherits the
+    configured value of dfs.namenode.decommission.backoff.monitor.pending.limit
+    (whose own default is 10000) rather than a fixed constant, so enabling
+    adaptive pacing never lowers peak decommission throughput below what the
+    stock backoff monitor was already doing. Only used by
     DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
     Reconfigurable at runtime.
   </description>

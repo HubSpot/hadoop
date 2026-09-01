@@ -81,10 +81,17 @@ public class DatanodeAdminAdaptiveBackoffMonitor
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT,
         DFSConfigKeys
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT_DEFAULT);
+    // Default the healthy-state ceiling to whatever the parent already resolved
+    // for dfs.namenode.decommission.backoff.monitor.pending.limit (read in
+    // super.processConf() above), NOT a hardcoded constant. Otherwise a cluster
+    // that has tuned pending.limit above the stock 10000 would silently LOSE
+    // peak decommission throughput the moment adaptive pacing is enabled - the
+    // opposite of the intended "aggressive when healthy" behavior, and it would
+    // masquerade as a no-op flag flip. Only an explicitly set max.pending.limit
+    // overrides this.
     this.maxPendingLimit = conf.getInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT,
-        DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT_DEFAULT);
+        getPendingRepLimit());
     this.healthyRpcQueueLength = conf.getInt(
         DFSConfigKeys
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH,
