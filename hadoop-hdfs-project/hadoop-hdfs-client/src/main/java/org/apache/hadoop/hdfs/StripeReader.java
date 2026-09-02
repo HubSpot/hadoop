@@ -119,6 +119,9 @@ abstract class StripeReader {
   protected final DFSStripedInputStream dfsStripedInputStream;
   private long readTo = -1;
   protected final int readDNMaxAttempts;
+  // HubSpot Edit: latency-triggered reconstruction for striped reads. See
+  // HubSpotStripedReadHedge for the rationale and safety argument.
+  private final HubSpotStripedReadHedge hubSpotHedge;
 
   protected ECChunk[] decodeInputs;
 
@@ -139,6 +142,10 @@ abstract class StripeReader {
     this.dfsStripedInputStream = dfsStripedInputStream;
     this.readDNMaxAttempts = dfsStripedInputStream.getDFSClient()
                                                   .getConf().getStripedReadDnMaxAttempts();
+    // HubSpot Edit: see HubSpotStripedReadHedge.
+    this.hubSpotHedge = new HubSpotStripedReadHedge(
+        dfsStripedInputStream.getDFSClient().getConfiguration(),
+        dfsStripedInputStream.getDFSClient().getHedgedReadMetrics());
 
     service = new ExecutorCompletionService<>(
             dfsStripedInputStream.getStripedReadsThreadPool());
@@ -348,7 +355,22 @@ abstract class StripeReader {
         alignedStripe.getOffsetInBlock(), getReadStrategies(chunk),
         block, chunkIndex);
 
-    Future<BlockReadStats> request = service.submit(readCallable);
+    // HubSpot Edit: the hedge needs to know when a cancelled read has actually
+    // stopped touching the caller's buffer. Future.cancel() cannot tell us --
+    // FutureTask flips to CANCELLED synchronously while the worker may still be
+    // unwinding -- so the task signals completion itself. See
+    // HubSpotStripedReadHedge.
+    final java.util.concurrent.CountDownLatch hubSpotDone =
+        hubSpotHedge.trackCompletionOf(chunkIndex);
+    final Callable<BlockReadStats> hubSpotWrapped = () -> {
+      try {
+        return readCallable.call();
+      } finally {
+        hubSpotDone.countDown();
+      }
+    };
+
+    Future<BlockReadStats> request = service.submit(hubSpotWrapped);
     futures.put(request, chunkIndex);
     return true;
   }
@@ -386,7 +408,38 @@ abstract class StripeReader {
       try {
         long beginReadMS = Time.monotonicNow();
         StripingChunkReadResult r = StripedBlockUtil
-            .getNextCompletedStripedRead(service, futures, 0);
+            // HubSpot Edit: upstream passes 0 here, which waits
+            // indefinitely for the slowest DataNode in the stripe.
+            .getNextCompletedStripedRead(service, futures,
+                hubSpotHedge.pollTimeoutMillis(futures, alignedStripe,
+                    parityBlkNum));
+        // HubSpot Edit: phase 1 of the hedge. Nothing completed within the
+        // threshold, so read the rest of the stripe plus a parity unit into the
+        // pooled decode buffers. The straggler is NOT cancelled here and still
+        // counts toward reconstruction -- nothing is given up, so if these
+        // extra reads fail we are no worse off. See HubSpotStripedReadHedge.
+        //
+        // Checked before the read-time accounting below: a TIMEOUT carries a
+        // null BlockReadStats and index -1, and the elapsed time is the hedge
+        // threshold rather than a read duration, so neither belongs in stats.
+        if (r.state == StripingChunkReadResult.TIMEOUT) {
+          if (hubSpotHedge.markSlowestPending(futures, alignedStripe,
+              parityBlkNum, i -> readerInfos[i] == null
+                  || readerInfos[i].datanode == null
+                  ? null : readerInfos[i].datanode.getDatanodeUuid()) >= 0) {
+            readDataForDecoding();
+            readParityChunks(1);
+          }
+          continue;
+        }
+        // HubSpot Edit: a chunk retired in phase 2 is already accounted as
+        // MISSING and is being reconstructed. Its future is intentionally left
+        // in the map (see HubSpotStripedReadHedge#retireHedgedStragglers), so
+        // discard the late result rather than running the PENDING-state
+        // handling below on it.
+        if (r.index >= 0 && hubSpotHedge.isRetired(r.index)) {
+          continue;
+        }
         long readTimeMS = Time.monotonicNow() - beginReadMS;
 
         dfsStripedInputStream.updateReadStats(r.getReadStats(), readTimeMS);
@@ -401,6 +454,21 @@ abstract class StripeReader {
           alignedStripe.fetchedChunksNum++;
           updateState4SuccessRead(r);
           if (alignedStripe.fetchedChunksNum == dataBlkNum) {
+            // HubSpot Edit: phase 2 of the hedge. A complete reconstruction
+            // set is in hand without the hedged stragglers, so -- and only at
+            // this point -- it is safe to stop waiting on them. Any that will
+            // not unwind promptly are left to finish normally.
+            for (int idx : hubSpotHedge.retireHedgedStragglers(futures,
+                alignedStripe)) {
+              alignedStripe.chunks[idx].state = StripingChunk.MISSING;
+              alignedStripe.missingChunksNum++;
+              dfsStripedInputStream.closeReader(readerInfos[idx]);
+            }
+            if (hubSpotHedge.hasOutstandingHedges(futures, alignedStripe)) {
+              // A straggler would not stop; keep waiting for it rather than
+              // reconstructing into a buffer it may still write to.
+              continue;
+            }
             clearFutures();
             break;
           }
