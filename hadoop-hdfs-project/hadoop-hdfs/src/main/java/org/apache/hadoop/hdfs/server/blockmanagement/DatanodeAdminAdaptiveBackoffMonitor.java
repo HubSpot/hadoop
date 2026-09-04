@@ -180,8 +180,15 @@ public class DatanodeAdminAdaptiveBackoffMonitor
    * Clamp any nonsensical configuration back to safe defaults rather than
    * letting it break decommission pacing. Mirrors the defensive style of the
    * parent {@code processConf}.
+   *
+   * <p>Runs at startup (from {@link #processConf()}) and is re-run by
+   * {@link DatanodeAdminManager} after every runtime reconfiguration, so the
+   * cross-field invariants below (max &gt;= min, busy &gt; healthy, and
+   * disabling adaptation on a broken threshold pair) hold identically whether a
+   * value came from config at boot or from {@code hdfs dfsadmin -reconfig}.
+   * Idempotent, and logs whenever it corrects something.
    */
-  private void validateAndFixup() {
+  void validateAndFixup() {
     if (minPendingLimit < 1) {
       LOG.error("{} must be greater than zero, was {}. Defaulting to {}.",
           DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT,

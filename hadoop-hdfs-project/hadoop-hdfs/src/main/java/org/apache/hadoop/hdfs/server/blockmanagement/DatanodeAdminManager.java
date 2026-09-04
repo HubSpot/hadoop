@@ -438,8 +438,17 @@ public class DatanodeAdminManager {
     return (DatanodeAdminAdaptiveBackoffMonitor) monitor;
   }
 
+  // Each refresh validates the individual value, applies it, then re-runs the
+  // monitor's validateAndFixup() so the cross-field invariants it establishes at
+  // startup (max >= min, busy > healthy, and "disable adaptation on a broken
+  // config") also hold after runtime reconfiguration - otherwise -reconfig could
+  // leave the controller in a state startup would never allow, e.g. re-enabling
+  // adaptation with busy <= healthy still in place.
+
   public void refreshDecommissionAdaptiveEnabled(boolean enabled, String key) {
-    requireHubSpotMonitor(key).setAdaptiveEnabled(enabled);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setAdaptiveEnabled(enabled);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -451,7 +460,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionMinPendingLimit(int val, String key) {
     ensurePositiveInt(val, key);
-    requireHubSpotMonitor(key).setMinPendingLimit(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setMinPendingLimit(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -463,7 +474,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionMaxPendingLimit(int val, String key) {
     ensurePositiveInt(val, key);
-    requireHubSpotMonitor(key).setMaxPendingLimit(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setMaxPendingLimit(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -475,7 +488,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionHealthyRpcQueueTimeMs(long val, String key) {
     ensurePositiveLong(val, key);
-    requireHubSpotMonitor(key).setHealthyRpcQueueTimeMs(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setHealthyRpcQueueTimeMs(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -487,7 +502,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionBusyRpcQueueTimeMs(long val, String key) {
     ensurePositiveLong(val, key);
-    requireHubSpotMonitor(key).setBusyRpcQueueTimeMs(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setBusyRpcQueueTimeMs(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -499,7 +516,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionBusyRpcProcessingTimeMs(long val, String key) {
     ensureDisabledOrPositive(val, key);
-    requireHubSpotMonitor(key).setBusyRpcProcessingTimeMs(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setBusyRpcProcessingTimeMs(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -511,7 +530,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionMaxLowRedundancyBlocks(long val, String key) {
     ensureDisabledOrPositive(val, key);
-    requireHubSpotMonitor(key).setMaxLowRedundancyBlocks(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setMaxLowRedundancyBlocks(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -523,7 +544,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionRampUpStep(int val, String key) {
     ensurePositiveInt(val, key);
-    requireHubSpotMonitor(key).setRampUpStep(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setRampUpStep(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -535,7 +558,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionRampDownStep(int val, String key) {
     ensurePositiveInt(val, key);
-    requireHubSpotMonitor(key).setRampDownStep(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setRampDownStep(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
@@ -547,7 +572,9 @@ public class DatanodeAdminManager {
 
   public void refreshDecommissionSignalEmaWindowMs(long val, String key) {
     ensureNonNegativeLong(val, key);
-    requireHubSpotMonitor(key).setSignalEmaWindowMs(val);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setSignalEmaWindowMs(val);
+    monitor.validateAndFixup();
   }
 
   @VisibleForTesting
