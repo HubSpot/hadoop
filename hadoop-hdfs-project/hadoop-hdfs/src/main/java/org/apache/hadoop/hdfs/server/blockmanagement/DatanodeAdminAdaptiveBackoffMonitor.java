@@ -24,24 +24,43 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * HubSpot: an adaptive variant of {@link DatanodeAdminBackoffMonitor}.
+ * HubSpot: an adaptive variant of {@link DatanodeAdminBackoffMonitor} that paces
+ * decommission-driven replication with a closed-loop feedback controller.
  *
- * <p>The upstream backoff monitor paces decommission-driven replication off a
- * fixed pending-replication limit ({@code pendingRepLimit}). This subclass makes
- * that limit dynamic: at the start of each monitor tick it samples NameNode load
- * and scales the effective limit between a configured minimum and maximum, so
- * decommission replication runs aggressively when the NameNode is healthy and
- * backs off when it is busy serving foreground traffic.
+ * <p>The upstream backoff monitor paces off a fixed pending-replication limit
+ * ({@code pendingRepLimit}). This subclass makes that limit dynamic: each monitor
+ * tick it samples a NameNode-load signal and nudges the effective limit up or
+ * down, so decommission runs aggressively when the NameNode is healthy and yields
+ * to foreground traffic when it is busy.
  *
- * <p>The primary health signal is the client RPC call-queue length, which
- * reflects real foreground contention and - unlike block-queue counts - is not
- * inflated by the monitor scheduling its own decommission work. An optional
- * average-RPC-processing-time gate and an optional low-redundancy-block ceiling
- * act as secondary hard caps.
+ * <p><b>Signal.</b> The load signal is the <em>average RPC queue time</em> - the
+ * time client calls wait in the call queue before a handler picks them up -
+ * exposed by {@link FSNamesystem#getAvgRpcQueueTimeMs()}. This is a windowed mean
+ * maintained by the RPC metrics system (a genuine sustained-contention measure),
+ * not an instantaneous point sample, and unlike block-queue counts it is not
+ * inflated by the monitor's own decommission scheduling. It can optionally be
+ * further smoothed across ticks with an EWMA.
+ *
+ * <p><b>Controller.</b> Rather than mapping the signal to an absolute target, the
+ * limit is an integral (accumulator) control variable, in the spirit of HBase's
+ * {@code FeedbackAdaptiveRateLimiter} and Janert's <i>Feedback Control for
+ * Computer Systems</i>:
+ * <ul>
+ *   <li>signal at/below the healthy threshold -&gt; ramp the limit UP by
+ *       {@code rampUpStep};</li>
+ *   <li>signal at/above the busy threshold -&gt; ramp the limit DOWN by
+ *       {@code rampDownStep};</li>
+ *   <li>in between (the deadband) -&gt; hold (this is the hysteresis that stops
+ *       tick-to-tick flapping).</li>
+ * </ul>
+ * Ramp-down is larger than ramp-up by default (fast to yield, slow to re-expand,
+ * like AIMD), and the limit is always clamped to {@code [min, max]}. Two optional
+ * hard overrides - sustained RPC processing time and a low-redundancy-block
+ * ceiling - slam the limit straight to the floor for immediate protection.
  *
  * <p>All behavior is gated by
  * {@code dfs.namenode.decommission.backoff.monitor.adaptive.enabled} (default
- * false). While disabled this class behaves identically to
+ * false); while disabled this class behaves identically to
  * {@link DatanodeAdminBackoffMonitor}. All thresholds are runtime-reconfigurable
  * via {@code hdfs dfsadmin -reconfig}.
  */
@@ -57,14 +76,34 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   private volatile int minPendingLimit;
   /** Ceiling on the effective pending limit (applied when healthy). */
   private volatile int maxPendingLimit;
-  /** RPC call-queue length at/below which we ramp to {@link #maxPendingLimit}. */
-  private volatile int healthyRpcQueueLength;
-  /** RPC call-queue length at/above which we clamp to {@link #minPendingLimit}. */
-  private volatile int busyRpcQueueLength;
+  /** Avg RPC queue time (ms) at/below which the controller ramps up. */
+  private volatile long healthyRpcQueueTimeMs;
+  /** Avg RPC queue time (ms) at/above which the controller ramps down. */
+  private volatile long busyRpcQueueTimeMs;
+  /** Blocks added to the limit per tick while healthy. Always &gt; 0. */
+  private volatile int rampUpStep;
+  /** Blocks removed from the limit per tick while busy. Always &gt; 0. */
+  private volatile int rampDownStep;
+  /** EWMA window (ms) for the signal; &lt;= 0 disables smoothing. */
+  private volatile long signalEmaWindowMs;
   /** Avg RPC processing time (ms) forcing the floor; &lt; 0 disables the gate. */
   private volatile long busyRpcProcessingTimeMs;
   /** Low-redundancy block ceiling forcing the floor; &lt; 0 disables the cap. */
   private volatile long maxLowRedundancyBlocks;
+
+  /** Monitor tick interval in ms, used to derive the EWMA alpha. */
+  private volatile long tickIntervalMs;
+  /** Derived EWMA smoothing factor; 1.0 means "no smoothing". */
+  private volatile double emaAlpha = 1.0;
+
+  /**
+   * The controller's integral state: the effective limit chosen last tick.
+   * {@code < 0} means "not seeded yet" (the first tick seeds it from the current
+   * pending limit so enabling the feature is smooth, not a step change).
+   */
+  private volatile int controllerLimit = -1;
+  /** EWMA state for the signal; {@code < 0} means "not seeded yet". */
+  private volatile double signalEma = -1.0;
 
   DatanodeAdminAdaptiveBackoffMonitor() {
   }
@@ -81,27 +120,36 @@ public class DatanodeAdminAdaptiveBackoffMonitor
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT,
         DFSConfigKeys
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT_DEFAULT);
-    // Default the healthy-state ceiling to whatever the parent already resolved
-    // for dfs.namenode.decommission.backoff.monitor.pending.limit (read in
-    // super.processConf() above), NOT a hardcoded constant. Otherwise a cluster
-    // that has tuned pending.limit above the stock 10000 would silently LOSE
-    // peak decommission throughput the moment adaptive pacing is enabled - the
-    // opposite of the intended "aggressive when healthy" behavior, and it would
-    // masquerade as a no-op flag flip. Only an explicitly set max.pending.limit
-    // overrides this.
+    // Default the healthy-state ceiling to whatever the parent resolved for
+    // pending.limit (read in super.processConf()), NOT a hardcoded constant, so
+    // a cluster that tuned pending.limit above the stock default does not
+    // silently lose peak throughput when adaptive pacing is enabled.
     this.maxPendingLimit = conf.getInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT,
         getPendingRepLimit());
-    this.healthyRpcQueueLength = conf.getInt(
+    this.healthyRpcQueueTimeMs = conf.getLong(
         DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH,
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS,
         DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH_DEFAULT);
-    this.busyRpcQueueLength = conf.getInt(
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS_DEFAULT);
+    this.busyRpcQueueTimeMs = conf.getLong(
         DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH,
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS,
         DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH_DEFAULT);
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS_DEFAULT);
+    this.rampUpStep = conf.getInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP,
+        DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP_DEFAULT);
+    this.rampDownStep = conf.getInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP,
+        DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP_DEFAULT);
+    this.signalEmaWindowMs = conf.getLong(
+        DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS,
+        DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS_DEFAULT);
     this.busyRpcProcessingTimeMs = conf.getLong(
         DFSConfigKeys
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS,
@@ -112,14 +160,20 @@ public class DatanodeAdminAdaptiveBackoffMonitor
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS,
         DFSConfigKeys
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS_DEFAULT);
+    this.tickIntervalMs = 1000L * conf.getInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY,
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_DEFAULT);
 
     validateAndFixup();
+    recomputeEmaAlpha();
 
     LOG.info("Initialized adaptive backoff decommission monitor. enabled={}, "
-            + "pendingLimit=[{}, {}], rpcQueueLength healthy<={} busy>={}, "
+            + "pendingLimit=[{}, {}], rpcQueueTimeMs healthy<={} busy>={}, "
+            + "rampStep up={} down={}, signalEmaWindowMs={} (alpha={}), "
             + "busyProcessingTimeMs={}, maxLowRedundancyBlocks={}",
-        adaptiveEnabled, minPendingLimit, maxPendingLimit, healthyRpcQueueLength,
-        busyRpcQueueLength, busyRpcProcessingTimeMs, maxLowRedundancyBlocks);
+        adaptiveEnabled, minPendingLimit, maxPendingLimit, healthyRpcQueueTimeMs,
+        busyRpcQueueTimeMs, rampUpStep, rampDownStep, signalEmaWindowMs, emaAlpha,
+        busyRpcProcessingTimeMs, maxLowRedundancyBlocks);
   }
 
   /**
@@ -145,16 +199,39 @@ public class DatanodeAdminAdaptiveBackoffMonitor
           minPendingLimit);
       maxPendingLimit = minPendingLimit;
     }
-    if (busyRpcQueueLength <= healthyRpcQueueLength) {
+    if (rampUpStep < 1) {
+      rampUpStep = DFSConfigKeys
+          .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP_DEFAULT;
+    }
+    if (rampDownStep < 1) {
+      rampDownStep = DFSConfigKeys
+          .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP_DEFAULT;
+    }
+    if (signalEmaWindowMs < 0) {
+      signalEmaWindowMs = 0;
+    }
+    if (tickIntervalMs < 1) {
+      tickIntervalMs =
+          1000L * DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_DEFAULT;
+    }
+    if (busyRpcQueueTimeMs <= healthyRpcQueueTimeMs) {
       LOG.error("{} ({}) must be greater than {} ({}). Disabling adaptive pacing.",
-          DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH,
-          busyRpcQueueLength,
-          DFSConfigKeys
-              .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH,
-          healthyRpcQueueLength);
-      // Leave thresholds as-is but do not adapt on a broken configuration.
+          DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS,
+          busyRpcQueueTimeMs,
+          DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS,
+          healthyRpcQueueTimeMs);
       adaptiveEnabled = false;
     }
+  }
+
+  /**
+   * alpha = tick / (window + tick): the fraction of each new sample folded into
+   * the EWMA. A window of 0 yields alpha == 1.0, i.e. no smoothing (the sample,
+   * which is itself an RPC-metrics windowed mean, is used directly).
+   */
+  private void recomputeEmaAlpha() {
+    this.emaAlpha = signalEmaWindowMs <= 0 ? 1.0
+        : (double) tickIntervalMs / (signalEmaWindowMs + tickIntervalMs);
   }
 
   @Override
@@ -173,22 +250,47 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   }
 
   /**
-   * Sample NameNode load and map it onto an effective pending limit for this
-   * tick. Fails open (returns the current limit) if the RPC server is not yet
-   * wired up, which can happen briefly in some MiniDFSCluster / standby paths.
+   * Sample the load signal, smooth it, and advance the controller by one tick.
+   * Fails open (returns the current limit without advancing controller state) if
+   * the RPC server is not yet wired up, which can happen briefly in some
+   * MiniDFSCluster / standby paths.
    */
   private int computeAdaptivePendingLimit() {
     final FSNamesystem fsn = (FSNamesystem) namesystem;
-    final long rpcQueueLength = fsn.getRpcCallQueueLength();
-    if (rpcQueueLength < 0) {
+    final long queueTimeMs = fsn.getAvgRpcQueueTimeMs();
+    if (queueTimeMs < 0) {
       return getPendingRepLimit();
     }
-    final long avgProcessingTimeMs =
-        busyRpcProcessingTimeMs >= 0 ? fsn.getAvgRpcProcessingTimeMs() : -1;
-    final long adjustedLowRedundancy =
-        maxLowRedundancyBlocks >= 0 ? sampleAdjustedLowRedundancyBlocks() : -1;
-    return computeEffectivePendingLimit(rpcQueueLength, avgProcessingTimeMs,
-        adjustedLowRedundancy);
+    // Seed the integral state from the current limit so enabling the controller
+    // is smooth rather than a step to some default.
+    if (controllerLimit < 0) {
+      controllerLimit =
+          Math.max(minPendingLimit, Math.min(maxPendingLimit, getPendingRepLimit()));
+    }
+    double smoothed = smoothSignal(signalEma, queueTimeMs);
+    signalEma = smoothed;
+    controllerLimit =
+        nextControllerLimit(controllerLimit, smoothed, safetyOverrideTripped(fsn));
+    return controllerLimit;
+  }
+
+  /**
+   * Whether an optional hard override should force the limit to the floor this
+   * tick: sustained high RPC processing time, or too many low-redundancy blocks
+   * not attributable to our own decommission scheduling.
+   */
+  private boolean safetyOverrideTripped(FSNamesystem fsn) {
+    if (busyRpcProcessingTimeMs >= 0) {
+      long avgProcessingTimeMs = fsn.getAvgRpcProcessingTimeMs();
+      if (avgProcessingTimeMs >= 0 && avgProcessingTimeMs >= busyRpcProcessingTimeMs) {
+        return true;
+      }
+    }
+    if (maxLowRedundancyBlocks >= 0
+        && sampleAdjustedLowRedundancyBlocks() > maxLowRedundancyBlocks) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -204,49 +306,42 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   }
 
   /**
-   * Pure mapping from sampled load signals to an effective pending limit.
-   * Package-visible so it can be unit-tested without running the full,
-   * lock-holding {@link #run()}.
+   * One integral-control step. Package-visible and pure so the ramp/deadband
+   * behavior can be unit-tested without running the lock-holding {@link #run()}.
    *
-   * @param rpcQueueLength current client RPC call-queue length (&gt;= 0)
-   * @param avgRpcProcessingTimeMs sampled avg RPC processing time in ms, or
-   *        &lt; 0 if not sampled / the gate is disabled
-   * @param adjustedLowRedundancyBlocks low-redundancy blocks minus our own
-   *        in-flight work, or &lt; 0 if not sampled / the cap is disabled
-   * @return the effective pending replication limit, within [min, max]
+   * @param current the limit chosen last tick
+   * @param smoothedSignal the smoothed avg RPC queue time (ms)
+   * @param forceMin whether a hard override demands the floor this tick
+   * @return the new limit, clamped to {@code [min, max]}
    */
   @VisibleForTesting
-  int computeEffectivePendingLimit(long rpcQueueLength,
-      long avgRpcProcessingTimeMs, long adjustedLowRedundancyBlocks) {
-    int effective;
-    if (rpcQueueLength <= healthyRpcQueueLength) {
-      effective = maxPendingLimit;
-    } else if (rpcQueueLength >= busyRpcQueueLength) {
-      effective = minPendingLimit;
-    } else {
-      // Linear interpolation across the [healthy, busy] deadband. The span is
-      // guaranteed positive here because validateAndFixup() disables adaptation
-      // unless busyRpcQueueLength > healthyRpcQueueLength.
-      long span = (long) busyRpcQueueLength - healthyRpcQueueLength;
-      long range = (long) maxPendingLimit - minPendingLimit;
-      long reduction = range * (rpcQueueLength - healthyRpcQueueLength) / span;
-      effective = (int) (maxPendingLimit - reduction);
+  int nextControllerLimit(int current, double smoothedSignal, boolean forceMin) {
+    if (forceMin) {
+      return minPendingLimit;
     }
-
-    // Secondary hard cap: sustained high average RPC processing time.
-    if (busyRpcProcessingTimeMs >= 0 && avgRpcProcessingTimeMs >= 0
-        && avgRpcProcessingTimeMs >= busyRpcProcessingTimeMs) {
-      effective = minPendingLimit;
+    if (smoothedSignal <= healthyRpcQueueTimeMs) {
+      return Math.min(maxPendingLimit, current + rampUpStep);
     }
-
-    // Secondary hard cap: too many low-redundancy blocks not attributable to
-    // our own decommission scheduling.
-    if (maxLowRedundancyBlocks >= 0 && adjustedLowRedundancyBlocks >= 0
-        && adjustedLowRedundancyBlocks > maxLowRedundancyBlocks) {
-      effective = minPendingLimit;
+    if (smoothedSignal >= busyRpcQueueTimeMs) {
+      return Math.max(minPendingLimit, current - rampDownStep);
     }
+    return current; // within the deadband: hold
+  }
 
-    return Math.max(minPendingLimit, Math.min(maxPendingLimit, effective));
+  /**
+   * Fold a new sample into the EWMA. Package-visible and pure for unit testing.
+   *
+   * @param prevEma the previous EWMA value, or {@code < 0} if unseeded
+   * @param sample the new signal sample
+   * @return {@code sample} on the first call (or when smoothing is disabled,
+   *         since then alpha == 1.0), otherwise the updated EWMA
+   */
+  @VisibleForTesting
+  double smoothSignal(double prevEma, long sample) {
+    if (prevEma < 0) {
+      return sample;
+    }
+    return emaAlpha * sample + (1.0 - emaAlpha) * prevEma;
   }
 
   // ------------------------------------------------------------------
@@ -282,21 +377,49 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   }
 
   @VisibleForTesting
-  public int getHealthyRpcQueueLength() {
-    return healthyRpcQueueLength;
+  public long getHealthyRpcQueueTimeMs() {
+    return healthyRpcQueueTimeMs;
   }
 
-  public void setHealthyRpcQueueLength(int healthyRpcQueueLength) {
-    this.healthyRpcQueueLength = healthyRpcQueueLength;
+  public void setHealthyRpcQueueTimeMs(long healthyRpcQueueTimeMs) {
+    this.healthyRpcQueueTimeMs = healthyRpcQueueTimeMs;
   }
 
   @VisibleForTesting
-  public int getBusyRpcQueueLength() {
-    return busyRpcQueueLength;
+  public long getBusyRpcQueueTimeMs() {
+    return busyRpcQueueTimeMs;
   }
 
-  public void setBusyRpcQueueLength(int busyRpcQueueLength) {
-    this.busyRpcQueueLength = busyRpcQueueLength;
+  public void setBusyRpcQueueTimeMs(long busyRpcQueueTimeMs) {
+    this.busyRpcQueueTimeMs = busyRpcQueueTimeMs;
+  }
+
+  @VisibleForTesting
+  public int getRampUpStep() {
+    return rampUpStep;
+  }
+
+  public void setRampUpStep(int rampUpStep) {
+    this.rampUpStep = rampUpStep;
+  }
+
+  @VisibleForTesting
+  public int getRampDownStep() {
+    return rampDownStep;
+  }
+
+  public void setRampDownStep(int rampDownStep) {
+    this.rampDownStep = rampDownStep;
+  }
+
+  @VisibleForTesting
+  public long getSignalEmaWindowMs() {
+    return signalEmaWindowMs;
+  }
+
+  public void setSignalEmaWindowMs(long signalEmaWindowMs) {
+    this.signalEmaWindowMs = signalEmaWindowMs;
+    recomputeEmaAlpha();
   }
 
   @VisibleForTesting

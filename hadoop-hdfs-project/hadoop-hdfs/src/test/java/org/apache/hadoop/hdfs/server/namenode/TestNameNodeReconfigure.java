@@ -81,8 +81,11 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BAC
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS;
 import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_BACKOFF_ENABLE_DEFAULT;
@@ -900,13 +903,29 @@ public class TestNameNodeReconfigure {
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, "250");
       assertEquals(250, adminManager.getDecommissionMinPendingLimit());
       nameNode.reconfigureProperty(
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH, "50");
-      assertEquals(50, adminManager.getDecommissionHealthyRpcQueueLength());
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS, "2");
+      assertEquals(2, adminManager.getDecommissionHealthyRpcQueueTimeMs());
       nameNode.reconfigureProperty(
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH, "2000");
-      assertEquals(2000, adminManager.getDecommissionBusyRpcQueueLength());
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS, "100");
+      assertEquals(100, adminManager.getDecommissionBusyRpcQueueTimeMs());
 
-      // the -1-capable long knobs accept -1 (disabled) and positive values.
+      // controller step sizes propagate to the running monitor.
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP, "750");
+      assertEquals(750, adminManager.getDecommissionRampUpStep());
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP, "3000");
+      assertEquals(3000, adminManager.getDecommissionRampDownStep());
+
+      // the EWMA window is 0-capable (0 disables smoothing).
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS, "60000");
+      assertEquals(60000, adminManager.getDecommissionSignalEmaWindowMs());
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS, "0");
+      assertEquals(0, adminManager.getDecommissionSignalEmaWindowMs());
+
+      // the -1-capable long overrides accept -1 (disabled) and positive values.
       nameNode.reconfigureProperty(
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS, "75");
       assertEquals(75, adminManager.getDecommissionBusyRpcProcessingTimeMs());

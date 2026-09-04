@@ -229,8 +229,11 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BAC
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS;
 
@@ -396,8 +399,11 @@ public class NameNode extends ReconfigurableBase implements
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED,
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT,
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT,
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH,
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH,
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS,
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS,
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP,
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP,
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS,
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS,
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS));
 
@@ -2411,8 +2417,11 @@ public class NameNode extends ReconfigurableBase implements
     } else if (property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED)
         || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT)
         || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT)
-        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH)
-        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH)
+        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS)
+        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS)
+        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP)
+        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP)
+        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS)
         || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS)
         || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS)) {
       return reconfigureDecommissionAdaptiveMonitorParameters(datanodeManager, property, newVal);
@@ -2864,19 +2873,19 @@ public class NameNode extends ReconfigurableBase implements
         adminManager.refreshDecommissionMaxPendingLimit(val, property);
         newSetting = String.valueOf(adminManager.getDecommissionMaxPendingLimit());
       } else if (property.equals(
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH)) {
-        int val = (newVal == null ? DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH_DEFAULT
-            : Integer.parseInt(newVal));
-        adminManager.refreshDecommissionHealthyRpcQueueLength(val, property);
-        newSetting = String.valueOf(adminManager.getDecommissionHealthyRpcQueueLength());
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS)) {
+        long val = (newVal == null ? DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS_DEFAULT
+            : Long.parseLong(newVal));
+        adminManager.refreshDecommissionHealthyRpcQueueTimeMs(val, property);
+        newSetting = String.valueOf(adminManager.getDecommissionHealthyRpcQueueTimeMs());
       } else if (property.equals(
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH)) {
-        int val = (newVal == null ? DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH_DEFAULT
-            : Integer.parseInt(newVal));
-        adminManager.refreshDecommissionBusyRpcQueueLength(val, property);
-        newSetting = String.valueOf(adminManager.getDecommissionBusyRpcQueueLength());
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS)) {
+        long val = (newVal == null ? DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS_DEFAULT
+            : Long.parseLong(newVal));
+        adminManager.refreshDecommissionBusyRpcQueueTimeMs(val, property);
+        newSetting = String.valueOf(adminManager.getDecommissionBusyRpcQueueTimeMs());
       } else if (property.equals(
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS)) {
         long val = (newVal == null ? DFSConfigKeys
@@ -2891,6 +2900,27 @@ public class NameNode extends ReconfigurableBase implements
             : Long.parseLong(newVal));
         adminManager.refreshDecommissionMaxLowRedundancyBlocks(val, property);
         newSetting = String.valueOf(adminManager.getDecommissionMaxLowRedundancyBlocks());
+      } else if (property.equals(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP)) {
+        int val = (newVal == null ? DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP_DEFAULT
+            : Integer.parseInt(newVal));
+        adminManager.refreshDecommissionRampUpStep(val, property);
+        newSetting = String.valueOf(adminManager.getDecommissionRampUpStep());
+      } else if (property.equals(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP)) {
+        int val = (newVal == null ? DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP_DEFAULT
+            : Integer.parseInt(newVal));
+        adminManager.refreshDecommissionRampDownStep(val, property);
+        newSetting = String.valueOf(adminManager.getDecommissionRampDownStep());
+      } else if (property.equals(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS)) {
+        long val = (newVal == null ? DFSConfigKeys
+            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS_DEFAULT
+            : Long.parseLong(newVal));
+        adminManager.refreshDecommissionSignalEmaWindowMs(val, property);
+        newSetting = String.valueOf(adminManager.getDecommissionSignalEmaWindowMs());
       }
       LOG.info("RECONFIGURE* changed reconfigureDecommissionAdaptiveMonitorParameters {} to {}",
           property, newSetting);

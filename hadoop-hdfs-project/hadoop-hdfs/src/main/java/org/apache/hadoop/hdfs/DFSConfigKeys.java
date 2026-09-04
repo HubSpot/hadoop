@@ -1025,10 +1025,11 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final int DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_BLOCKS_PER_LOCK_DEFAULT
       = 1000;
   // HubSpot: adaptive decommission pacing for DatanodeAdminAdaptiveBackoffMonitor.
-  // When enabled, the effective pending replication limit is scaled between the
-  // min and max limits below based on NameNode load (RPC call-queue length), so
-  // decommission-driven replication runs aggressively when the NameNode is healthy
-  // and backs off when it is busy serving foreground traffic.
+  // When enabled, a closed-loop feedback controller nudges the effective pending
+  // replication limit between the min and max limits below each monitor tick,
+  // based on a smoothed NameNode-load signal (average RPC queue time). The limit
+  // ramps up while the NN is healthy and ramps down while it is busy, so
+  // decommission-driven replication yields to foreground traffic under load.
   public static final String
       DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED
       = "dfs.namenode.decommission.backoff.monitor.adaptive.enabled";
@@ -1044,16 +1045,40 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       = "dfs.namenode.decommission.backoff.monitor.max.pending.limit";
   public static final int
       DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT_DEFAULT = 10000;
+  // Primary load signal: the deadband is [healthy, busy] average RPC queue time,
+  // in the RPC metrics time unit (milliseconds by default). At/below healthy the
+  // controller ramps the limit up; at/above busy it ramps down; in between it
+  // holds (hysteresis).
   public static final String
-      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH
-      = "dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.length";
-  public static final int
-      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH_DEFAULT = 100;
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS
+      = "dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.time.ms";
+  public static final long
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS_DEFAULT = 1;
   public static final String
-      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH
-      = "dfs.namenode.decommission.backoff.monitor.busy.rpc.queue.length";
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS
+      = "dfs.namenode.decommission.backoff.monitor.busy.rpc.queue.time.ms";
+  public static final long
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS_DEFAULT = 50;
+  // Controller step sizes (blocks per tick). Ramp-down is larger than ramp-up by
+  // default (fast to yield under load, slow to re-expand), analogous to AIMD.
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP
+      = "dfs.namenode.decommission.backoff.monitor.ramp.up.step";
   public static final int
-      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH_DEFAULT = 1000;
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP_DEFAULT = 500;
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP
+      = "dfs.namenode.decommission.backoff.monitor.ramp.down.step";
+  public static final int
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP_DEFAULT = 2000;
+  // Optional EWMA smoothing window (ms) applied to the queue-time signal across
+  // ticks. 0 disables it (the already-windowed metric mean is used directly).
+  public static final String
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS
+      = "dfs.namenode.decommission.backoff.monitor.signal.ema.window.ms";
+  public static final long
+      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS_DEFAULT = 0;
+  // Optional hard overrides that immediately slam the limit to the floor.
   public static final String
       DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS
       = "dfs.namenode.decommission.backoff.monitor.busy.rpc.processing.time.ms";
