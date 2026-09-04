@@ -682,6 +682,45 @@ public class TestNameNodeReconfigure {
   }
 
   @Test
+  public void testReconfigureReappliesCrossFieldInvariants()
+      throws ReconfigurationException, IOException {
+    Configuration conf = new HdfsConfiguration();
+    conf.setClass(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MONITOR_CLASS,
+        DatanodeAdminAdaptiveBackoffMonitor.class, DatanodeAdminMonitorInterface.class);
+
+    try (MiniDFSCluster newCluster = new MiniDFSCluster.Builder(conf).build()) {
+      newCluster.waitActive();
+      final NameNode nameNode = newCluster.getNameNode();
+      final DatanodeAdminManager adminManager = nameNode.namesystem.getBlockManager()
+          .getDatanodeManager().getDatanodeAdminManager();
+
+      // Raising min above max must not leave min > max: validateAndFixup() runs
+      // after the set and lifts max up to min (defaults are min=100, max=10000).
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, "20000");
+      assertEquals(20000, adminManager.getDecommissionMinPendingLimit());
+      assertEquals(20000, adminManager.getDecommissionMaxPendingLimit());
+
+      // Worst case from review: break the thresholds (busy <= healthy), then try
+      // to enable adaptation. Re-running validateAndFixup() on the enable keeps
+      // it disabled rather than re-enabling with a broken deadband.
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS, "1"); // == healthy
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED, "true");
+      assertFalse("must not enable adaptation with busy <= healthy",
+          adminManager.getDecommissionAdaptiveEnabled());
+
+      // Once the thresholds are valid again, enabling sticks.
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS, "100");
+      nameNode.reconfigureProperty(
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED, "true");
+      assertTrue(adminManager.getDecommissionAdaptiveEnabled());
+    }
+  }
+
+  @Test
   public void testReconfigureAdaptiveParametersRejectedForDefaultMonitor()
       throws IOException {
     // The adaptive knobs are only valid for DatanodeAdminAdaptiveBackoffMonitor.

@@ -188,6 +188,29 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
     assertEquals(8000, m.getMaxPendingLimit());
   }
 
+  @Test
+  public void testValidateAndFixupReappliesMaxGeMinAfterSet() {
+    // Simulates the reconfig path (setter then validateAndFixup): raising min
+    // above max must lift max, not leave min > max.
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
+    m.setMinPendingLimit(15000);
+    m.validateAndFixup();
+    assertEquals(15000, m.getMinPendingLimit());
+    assertEquals(15000, m.getMaxPendingLimit());
+  }
+
+  @Test
+  public void testValidateAndFixupDisablesAdaptationOnBrokenThresholdsAfterSet() {
+    // Worst case: break the deadband (busy == healthy) then try to enable;
+    // validateAndFixup must keep adaptation off.
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
+    assertTrue(m.isAdaptiveEnabled());
+    m.setBusyRpcQueueTimeMs(HEALTHY_MS);
+    m.setAdaptiveEnabled(true);
+    m.validateAndFixup();
+    assertFalse(m.isAdaptiveEnabled());
+  }
+
   // ---- run() wiring ----
 
   @Test
