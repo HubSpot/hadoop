@@ -6765,15 +6765,6 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   }
 
   /**
-   * @return the current length of the client RPC call queue, or -1 if the RPC
-   *         server is not (yet) wired up.
-   */
-  public long getRpcCallQueueLength() {
-    Server server = clientRpcServer;
-    return server == null ? -1 : server.getCallQueueLen();
-  }
-
-  /**
    * @return the rolling mean RPC processing time in milliseconds, or -1 if the
    *         RPC server is not wired up or no samples have been recorded in the
    *         current metrics interval.
@@ -6785,6 +6776,23 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       return -1;
     }
     return (long) server.getRpcMetrics().getProcessingMean();
+  }
+
+  /**
+   * @return the rolling mean RPC queue time (time a call waits in the call queue
+   *         before a handler picks it up), in the RPC metrics time unit
+   *         (milliseconds by default), or -1 if the RPC server is not wired up
+   *         or no samples have been recorded in the current metrics interval.
+   *         This is a windowed average - a better sustained-contention signal
+   *         than the instantaneous call-queue length.
+   */
+  public long getAvgRpcQueueTimeMs() {
+    Server server = clientRpcServer;
+    if (server == null || server.getRpcMetrics() == null
+        || server.getRpcMetrics().getQueueSampleCount() == 0) {
+      return -1;
+    }
+    return (long) server.getRpcMetrics().getQueueMean();
   }
 
   /** @return the FSDirectory. */

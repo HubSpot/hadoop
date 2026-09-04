@@ -29,16 +29,19 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * HubSpot: pure-unit tests for the adaptive pacing logic of
- * {@link DatanodeAdminAdaptiveBackoffMonitor}. These exercise the load-to-limit
- * mapping and the {@code run()} wiring directly, without a MiniDFSCluster.
+ * HubSpot: pure-unit tests for the feedback controller of
+ * {@link DatanodeAdminAdaptiveBackoffMonitor}. These exercise the integral
+ * control step, the EWMA smoothing, and the {@code run()} wiring directly,
+ * without a MiniDFSCluster.
  */
 public class TestDatanodeAdminAdaptiveBackoffMonitor {
 
   private static final int MIN = 100;
   private static final int MAX = 10000;
-  private static final int HEALTHY_Q = 100;
-  private static final int BUSY_Q = 1100;
+  private static final long HEALTHY_MS = 1;
+  private static final long BUSY_MS = 50;
+  private static final int UP = 500;
+  private static final int DOWN = 2000;
 
   private Configuration baseConf() {
     Configuration conf = new Configuration();
@@ -48,12 +51,16 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, MIN);
     conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, MAX);
+    conf.setLong(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS,
+        HEALTHY_MS);
+    conf.setLong(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS,
+        BUSY_MS);
     conf.setInt(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH,
-        HEALTHY_Q);
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP, UP);
     conf.setInt(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH,
-        BUSY_Q);
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP, DOWN);
     return conf;
   }
 
@@ -69,71 +76,84 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
     return monitor;
   }
 
+  // ---- controller step (pure) ----
+
   @Test
-  public void testHealthyReturnsMax() {
+  public void testRampsUpWhenHealthy() {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
-    assertEquals(MAX, m.computeEffectivePendingLimit(0, -1, -1));
-    assertEquals(MAX, m.computeEffectivePendingLimit(HEALTHY_Q, -1, -1));
+    assertEquals(600, m.nextControllerLimit(100, 0, false));
+    assertEquals(600, m.nextControllerLimit(100, HEALTHY_MS, false)); // boundary
+    // clamps at the ceiling
+    assertEquals(MAX, m.nextControllerLimit(9800, 0, false));
   }
 
   @Test
-  public void testBusyReturnsMin() {
+  public void testRampsDownWhenBusy() {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
-    assertEquals(MIN, m.computeEffectivePendingLimit(BUSY_Q, -1, -1));
-    assertEquals(MIN, m.computeEffectivePendingLimit(BUSY_Q * 10L, -1, -1));
+    assertEquals(8000, m.nextControllerLimit(10000, 100, false));
+    assertEquals(8000, m.nextControllerLimit(10000, BUSY_MS, false)); // boundary
+    // clamps at the floor
+    assertEquals(MIN, m.nextControllerLimit(500, 100, false));
   }
 
   @Test
-  public void testInterpolationIsMonotonicallyDecreasing() {
+  public void testHoldsInsideDeadband() {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
-    int prev = Integer.MAX_VALUE;
-    for (long q = HEALTHY_Q; q <= BUSY_Q; q += 100) {
-      int effective = m.computeEffectivePendingLimit(q, -1, -1);
-      assertTrue("effective should stay within [min, max]",
-          effective >= MIN && effective <= MAX);
-      assertTrue("effective limit should decrease as the queue grows (q=" + q + ")",
-          effective <= prev);
-      prev = effective;
+    // strictly between healthy (1) and busy (50): hold
+    assertEquals(5000, m.nextControllerLimit(5000, 25, false));
+  }
+
+  @Test
+  public void testForceMinOverridesHealthySignal() {
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
+    assertEquals(MIN, m.nextControllerLimit(10000, 0 /* healthy */, true));
+  }
+
+  @Test
+  public void testConvergesUpThenHolds() {
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
+    int limit = MIN;
+    for (int i = 0; i < 100 && limit < MAX; i++) {
+      limit = m.nextControllerLimit(limit, 0, false);
     }
-    // Midpoint of the deadband should land strictly between min and max.
-    int mid = m.computeEffectivePendingLimit((HEALTHY_Q + BUSY_Q) / 2, -1, -1);
-    assertTrue(mid > MIN && mid < MAX);
+    assertEquals(MAX, limit);
+    // once at the ceiling a healthy signal keeps it pinned (no overshoot)
+    assertEquals(MAX, m.nextControllerLimit(limit, 0, false));
+  }
+
+  // ---- EWMA smoothing (pure) ----
+
+  @Test
+  public void testSmoothingDisabledByDefaultReturnsSample() {
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
+    assertEquals(40.0, m.smoothSignal(-1.0, 40), 0.0001); // first sample
+    assertEquals(40.0, m.smoothSignal(30.0, 40), 0.0001); // alpha == 1.0
   }
 
   @Test
-  public void testProcessingTimeGateForcesMin() {
+  public void testSmoothingWithWindow() {
     Configuration conf = baseConf();
+    // interval defaults to 30s; a 30s window => alpha = 30000/(30000+30000) = 0.5
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY, 30);
     conf.setLong(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS,
-        50);
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS,
+        30_000);
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
-    // Healthy queue would give MAX, but the processing-time gate trips.
-    assertEquals(MIN, m.computeEffectivePendingLimit(0, 60, -1));
-    // Below the threshold it has no effect.
-    assertEquals(MAX, m.computeEffectivePendingLimit(0, 40, -1));
+    assertEquals(100.0, m.smoothSignal(-1.0, 100), 0.0001); // seed
+    assertEquals(50.0, m.smoothSignal(100.0, 0), 0.0001);   // 0.5*0 + 0.5*100
   }
 
-  @Test
-  public void testLowRedundancyCapForcesMin() {
-    Configuration conf = baseConf();
-    conf.setLong(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS,
-        1000);
-    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
-    assertEquals(MIN, m.computeEffectivePendingLimit(0, -1, 2000));
-    assertEquals(MAX, m.computeEffectivePendingLimit(0, -1, 500));
-  }
+  // ---- config validation ----
 
   @Test
   public void testBrokenThresholdsDisableAdaptation() {
     Configuration conf = baseConf();
     // busy must be strictly greater than healthy; make it invalid.
-    conf.setInt(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH,
-        HEALTHY_Q);
+    conf.setLong(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS,
+        HEALTHY_MS);
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, null);
-    assertFalse("adaptive pacing should be disabled on invalid thresholds",
-        m.isAdaptiveEnabled());
+    assertFalse(m.isAdaptiveEnabled());
   }
 
   @Test
@@ -150,9 +170,6 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
   @Test
   public void testMaxLimitInheritsConfiguredPendingLimitWhenUnset() {
     Configuration conf = baseConf();
-    // Do not set max.pending.limit; tune the parent's pending.limit above the
-    // stock 10000. The ceiling must inherit that tuned value, not a constant,
-    // so enabling adaptive pacing never lowers peak throughput.
     conf.unset(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT);
     conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 50000);
@@ -171,19 +188,33 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
     assertEquals(8000, m.getMaxPendingLimit());
   }
 
+  // ---- run() wiring ----
+
   @Test
-  public void testRunAppliesLimitWhenEnabled() {
+  public void testRunSeedsAndRampsUpWhenHealthy() {
     Configuration conf = baseConf();
     conf.setInt(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, 9000);
-    conf.setInt(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 7777);
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 5000);
     FSNamesystem fsn = mock(FSNamesystem.class);
     when(fsn.isRunning()).thenReturn(false); // short-circuit super.run()
-    when(fsn.getRpcCallQueueLength()).thenReturn(0L); // healthy
+    when(fsn.getAvgRpcQueueTimeMs()).thenReturn(0L); // healthy
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, fsn);
     m.run();
-    assertEquals(9000, m.getPendingRepLimit());
+    // seeds the controller from the current limit (5000), then ramps up once
+    assertEquals(5500, m.getPendingRepLimit());
+  }
+
+  @Test
+  public void testRunRampsDownWhenBusy() {
+    Configuration conf = baseConf();
+    conf.setInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 5000);
+    FSNamesystem fsn = mock(FSNamesystem.class);
+    when(fsn.isRunning()).thenReturn(false);
+    when(fsn.getAvgRpcQueueTimeMs()).thenReturn(100L); // busy
+    DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, fsn);
+    m.run();
+    assertEquals(3000, m.getPendingRepLimit());
   }
 
   @Test
@@ -201,13 +232,13 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
   }
 
   @Test
-  public void testRunFailsOpenWhenRpcServerUnavailable() {
+  public void testRunFailsOpenWhenQueueTimeUnavailable() {
     Configuration conf = baseConf();
     conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 7777);
     FSNamesystem fsn = mock(FSNamesystem.class);
     when(fsn.isRunning()).thenReturn(false);
-    when(fsn.getRpcCallQueueLength()).thenReturn(-1L); // not wired yet
+    when(fsn.getAvgRpcQueueTimeMs()).thenReturn(-1L); // metrics not available yet
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, fsn);
     m.run();
     assertEquals(7777, m.getPendingRepLimit());

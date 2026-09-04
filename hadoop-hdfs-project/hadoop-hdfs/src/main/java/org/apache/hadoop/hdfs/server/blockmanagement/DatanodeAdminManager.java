@@ -501,28 +501,28 @@ public class DatanodeAdminManager {
         .getMaxPendingLimit();
   }
 
-  public void refreshDecommissionHealthyRpcQueueLength(int val, String key) {
-    ensurePositiveInt(val, key);
-    requireHubSpotMonitor(key).setHealthyRpcQueueLength(val);
+  public void refreshDecommissionHealthyRpcQueueTimeMs(long val, String key) {
+    ensurePositiveLong(val, key);
+    requireHubSpotMonitor(key).setHealthyRpcQueueTimeMs(val);
   }
 
   @VisibleForTesting
-  public int getDecommissionHealthyRpcQueueLength() {
+  public long getDecommissionHealthyRpcQueueTimeMs() {
     return requireHubSpotMonitor(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_LENGTH)
-        .getHealthyRpcQueueLength();
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS)
+        .getHealthyRpcQueueTimeMs();
   }
 
-  public void refreshDecommissionBusyRpcQueueLength(int val, String key) {
-    ensurePositiveInt(val, key);
-    requireHubSpotMonitor(key).setBusyRpcQueueLength(val);
+  public void refreshDecommissionBusyRpcQueueTimeMs(long val, String key) {
+    ensurePositiveLong(val, key);
+    requireHubSpotMonitor(key).setBusyRpcQueueTimeMs(val);
   }
 
   @VisibleForTesting
-  public int getDecommissionBusyRpcQueueLength() {
+  public long getDecommissionBusyRpcQueueTimeMs() {
     return requireHubSpotMonitor(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_LENGTH)
-        .getBusyRpcQueueLength();
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS)
+        .getBusyRpcQueueTimeMs();
   }
 
   public void refreshDecommissionBusyRpcProcessingTimeMs(long val, String key) {
@@ -547,5 +547,54 @@ public class DatanodeAdminManager {
     return requireHubSpotMonitor(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS)
         .getMaxLowRedundancyBlocks();
+  }
+
+  public void refreshDecommissionRampUpStep(int val, String key) {
+    ensurePositiveInt(val, key);
+    requireHubSpotMonitor(key).setRampUpStep(val);
+  }
+
+  @VisibleForTesting
+  public int getDecommissionRampUpStep() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP)
+        .getRampUpStep();
+  }
+
+  public void refreshDecommissionRampDownStep(int val, String key) {
+    ensurePositiveInt(val, key);
+    requireHubSpotMonitor(key).setRampDownStep(val);
+  }
+
+  @VisibleForTesting
+  public int getDecommissionRampDownStep() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP)
+        .getRampDownStep();
+  }
+
+  public void refreshDecommissionSignalEmaWindowMs(long val, String key) {
+    ensureNonNegativeLong(val, key);
+    requireHubSpotMonitor(key).setSignalEmaWindowMs(val);
+  }
+
+  @VisibleForTesting
+  public long getDecommissionSignalEmaWindowMs() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS)
+        .getSignalEmaWindowMs();
+  }
+
+  private void ensurePositiveLong(long val, String key) {
+    checkArgument(
+        (val > 0),
+        key + " = '" + val + "' is invalid. " +
+            "It should be a positive, non-zero value.");
+  }
+
+  private void ensureNonNegativeLong(long val, String key) {
+    checkArgument(
+        (val >= 0),
+        key + " = '" + val + "' is invalid. It should be zero or greater.");
   }
 }
