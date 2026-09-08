@@ -55,7 +55,6 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BAC
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.text.TextStringBuilder;
@@ -452,7 +451,7 @@ public class TestDFSAdmin {
     final List<String> outs = Lists.newArrayList();
     final List<String> errs = Lists.newArrayList();
     getReconfigurableProperties("namenode", address, outs, errs);
-    assertEquals(30, outs.size());
+    assertEquals(29, outs.size());
     assertTrue(outs.get(0).contains("Reconfigurable properties:"));
     assertEquals(DFS_BLOCK_INVALIDATE_LIMIT_KEY, outs.get(1));
     assertEquals(DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY, outs.get(2));
@@ -478,16 +477,15 @@ public class TestDFSAdmin {
         outs.get(10));
     assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS, outs.get(11));
     assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS, outs.get(12));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS, outs.get(13));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, outs.get(14));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, outs.get(15));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_BLOCKS_PER_LOCK, outs.get(16));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, outs.get(17));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP, outs.get(18));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP, outs.get(19));
-    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS, outs.get(20));
-    assertEquals(DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, outs.get(21));
-    assertEquals(DFS_NAMENODE_MAX_SLOWPEER_COLLECT_NODES_KEY, outs.get(22));
+    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT, outs.get(13));
+    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT, outs.get(14));
+    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_BLOCKS_PER_LOCK, outs.get(15));
+    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, outs.get(16));
+    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP, outs.get(17));
+    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP, outs.get(18));
+    assertEquals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS, outs.get(19));
+    assertEquals(DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, outs.get(20));
+    assertEquals(DFS_NAMENODE_MAX_SLOWPEER_COLLECT_NODES_KEY, outs.get(21));
     assertEquals(errs.size(), 0);
   }
 

@@ -528,20 +528,6 @@ public class DatanodeAdminManager {
         .getBusyRpcProcessingTimeMs();
   }
 
-  public void refreshDecommissionMaxLowRedundancyBlocks(long val, String key) {
-    ensureDisabledOrPositive(val, key);
-    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
-    monitor.setMaxLowRedundancyBlocks(val);
-    monitor.validateAndFixup();
-  }
-
-  @VisibleForTesting
-  public long getDecommissionMaxLowRedundancyBlocks() {
-    return requireHubSpotMonitor(
-        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS)
-        .getMaxLowRedundancyBlocks();
-  }
-
   public void refreshDecommissionRampUpStep(int val, String key) {
     ensurePositiveInt(val, key);
     DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);

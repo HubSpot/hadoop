@@ -54,9 +54,9 @@ import org.slf4j.LoggerFactory;
  *       tick-to-tick flapping).</li>
  * </ul>
  * Ramp-down is larger than ramp-up by default (fast to yield, slow to re-expand,
- * like AIMD), and the limit is always clamped to {@code [min, max]}. Two optional
- * hard overrides - sustained RPC processing time and a low-redundancy-block
- * ceiling - slam the limit straight to the floor for immediate protection.
+ * like AIMD), and the limit is always clamped to {@code [min, max]}. An optional
+ * hard override - sustained RPC processing time - slams the limit straight to the
+ * floor for immediate protection.
  *
  * <p>All behavior is gated by
  * {@code dfs.namenode.decommission.backoff.monitor.adaptive.enabled} (default
@@ -88,8 +88,6 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   private volatile long signalEmaWindowMs;
   /** Avg RPC processing time (ms) forcing the floor; &lt; 0 disables the gate. */
   private volatile long busyRpcProcessingTimeMs;
-  /** Low-redundancy block ceiling forcing the floor; &lt; 0 disables the cap. */
-  private volatile long maxLowRedundancyBlocks;
 
   /** Monitor tick interval in ms, used to derive the EWMA alpha. */
   private volatile long tickIntervalMs;
@@ -157,11 +155,6 @@ public class DatanodeAdminAdaptiveBackoffMonitor
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS,
         DFSConfigKeys
             .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS_DEFAULT);
-    this.maxLowRedundancyBlocks = conf.getLong(
-        DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS,
-        DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS_DEFAULT);
     this.tickIntervalMs = 1000L * conf.getInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY,
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_DEFAULT);
@@ -172,10 +165,10 @@ public class DatanodeAdminAdaptiveBackoffMonitor
     LOG.info("Initialized adaptive backoff decommission monitor. enabled={}, "
             + "pendingLimit=[{}, {}], rpcQueueTimeMs healthy<={} busy>={}, "
             + "rampStep up={} down={}, signalEmaWindowMs={} (alpha={}), "
-            + "busyProcessingTimeMs={}, maxLowRedundancyBlocks={}",
+            + "busyProcessingTimeMs={}",
         adaptiveEnabled, minPendingLimit, maxPendingLimit, healthyRpcQueueTimeMs,
         busyRpcQueueTimeMs, rampUpStep, rampDownStep, signalEmaWindowMs, emaAlpha,
-        busyRpcProcessingTimeMs, maxLowRedundancyBlocks);
+        busyRpcProcessingTimeMs);
   }
 
   /**
@@ -300,9 +293,8 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   }
 
   /**
-   * Whether an optional hard override should force the limit to the floor this
-   * tick: sustained high RPC processing time, or too many low-redundancy blocks
-   * not attributable to our own decommission scheduling.
+   * Whether the optional hard override should force the limit to the floor this
+   * tick: sustained high average RPC processing time.
    */
   private boolean safetyOverrideTripped(FSNamesystem fsn) {
     if (busyRpcProcessingTimeMs >= 0) {
@@ -311,23 +303,7 @@ public class DatanodeAdminAdaptiveBackoffMonitor
         return true;
       }
     }
-    if (maxLowRedundancyBlocks >= 0
-        && sampleAdjustedLowRedundancyBlocks() > maxLowRedundancyBlocks) {
-      return true;
-    }
     return false;
-  }
-
-  /**
-   * Approximate the count of low-redundancy blocks that are NOT a result of our
-   * own decommission scheduling, by subtracting the blocks currently pending
-   * reconstruction (a proxy for in-flight scheduled work). Used only as a hard
-   * safety ceiling, never as the primary pacing signal.
-   */
-  private long sampleAdjustedLowRedundancyBlocks() {
-    long lowRedundancy = blockManager.getLowRedundancyBlocksCount();
-    long ourInflight = blockManager.getPendingReconstructionBlocksCount();
-    return Math.max(0, lowRedundancy - ourInflight);
   }
 
   /**
@@ -454,14 +430,5 @@ public class DatanodeAdminAdaptiveBackoffMonitor
 
   public void setBusyRpcProcessingTimeMs(long busyRpcProcessingTimeMs) {
     this.busyRpcProcessingTimeMs = busyRpcProcessingTimeMs;
-  }
-
-  @VisibleForTesting
-  public long getMaxLowRedundancyBlocks() {
-    return maxLowRedundancyBlocks;
-  }
-
-  public void setMaxLowRedundancyBlocks(long maxLowRedundancyBlocks) {
-    this.maxLowRedundancyBlocks = maxLowRedundancyBlocks;
   }
 }

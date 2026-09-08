@@ -87,7 +87,6 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BAC
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS;
 import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_BACKOFF_ENABLE_DEFAULT;
 
 public class TestNameNodeReconfigure {
@@ -925,13 +924,14 @@ public class TestNameNodeReconfigure {
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS, "0");
       assertEquals(0, adminManager.getDecommissionSignalEmaWindowMs());
 
-      // the -1-capable long overrides accept -1 (disabled) and positive values.
+      // the processing-time override is -1-capable (accepts -1 (disabled) and
+      // positive values).
       nameNode.reconfigureProperty(
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS, "75");
       assertEquals(75, adminManager.getDecommissionBusyRpcProcessingTimeMs());
       nameNode.reconfigureProperty(
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS, "-1");
-      assertEquals(-1, adminManager.getDecommissionMaxLowRedundancyBlocks());
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS, "-1");
+      assertEquals(-1, adminManager.getDecommissionBusyRpcProcessingTimeMs());
 
       // invalid values are rejected.
       try {

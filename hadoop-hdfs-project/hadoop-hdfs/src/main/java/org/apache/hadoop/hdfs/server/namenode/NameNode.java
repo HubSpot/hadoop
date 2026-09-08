@@ -235,7 +235,6 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BAC
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS;
 
 import static org.apache.hadoop.util.ExitUtil.terminate;
 import static org.apache.hadoop.util.ToolRunner.confirmPrompt;
@@ -404,8 +403,7 @@ public class NameNode extends ReconfigurableBase implements
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP,
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP,
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS,
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS,
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS));
+          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS));
 
   private static final String USAGE = "Usage: hdfs namenode ["
       + StartupOption.BACKUP.getName() + "] | \n\t["
@@ -2422,8 +2420,7 @@ public class NameNode extends ReconfigurableBase implements
         || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP)
         || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP)
         || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS)
-        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS)
-        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS)) {
+        || property.equals(DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS)) {
       return reconfigureDecommissionAdaptiveMonitorParameters(datanodeManager, property, newVal);
     } else {
       throw new ReconfigurationException(property, newVal, getConf().get(
@@ -2893,13 +2890,6 @@ public class NameNode extends ReconfigurableBase implements
             : Long.parseLong(newVal));
         adminManager.refreshDecommissionBusyRpcProcessingTimeMs(val, property);
         newSetting = String.valueOf(adminManager.getDecommissionBusyRpcProcessingTimeMs());
-      } else if (property.equals(
-          DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS)) {
-        long val = (newVal == null ? DFSConfigKeys
-            .DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS_DEFAULT
-            : Long.parseLong(newVal));
-        adminManager.refreshDecommissionMaxLowRedundancyBlocks(val, property);
-        newSetting = String.valueOf(adminManager.getDecommissionMaxLowRedundancyBlocks());
       } else if (property.equals(
           DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP)) {
         int val = (newVal == null ? DFSConfigKeys
