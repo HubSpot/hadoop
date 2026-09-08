@@ -30,6 +30,7 @@ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.metrics2.lib.MutableGaugeInt;
+import org.apache.hadoop.metrics2.lib.MutableGaugeLong;
 import org.apache.hadoop.metrics2.lib.MutableQuantiles;
 import org.apache.hadoop.metrics2.lib.MutableRate;
 import org.apache.hadoop.metrics2.lib.MutableStat;
@@ -91,6 +92,35 @@ public class NameNodeMetrics {
   MutableGaugeInt deleteBlocksQueued;
   @Metric("Number of pending deletion blocks")
   MutableGaugeInt pendingDeleteBlocksCount;
+  // HubSpot: observability for the adaptive decommission monitor
+  // (DatanodeAdminAdaptiveBackoffMonitor). Gauges read 0 when that monitor is
+  // not the active decommission monitor or adaptive pacing is disabled.
+  @Metric("Adaptive decommission: 1 when the feedback controller is actively "
+      + "pacing (enabled, wired, valid thresholds), else 0")
+  MutableGaugeInt decommissionAdaptiveActive;
+  @Metric("Adaptive decommission: effective pending replication limit chosen "
+      + "by the feedback controller on the last tick")
+  MutableGaugeInt decommissionAdaptivePendingLimit;
+  @Metric("Adaptive decommission: configured floor for the pending limit")
+  MutableGaugeInt decommissionAdaptiveMinPendingLimit;
+  @Metric("Adaptive decommission: configured ceiling for the pending limit")
+  MutableGaugeInt decommissionAdaptiveMaxPendingLimit;
+  @Metric("Adaptive decommission: smoothed avg RPC queue time (ms) the "
+      + "controller paced off on the last tick")
+  MutableGaugeLong decommissionAdaptiveRpcQueueTimeMs;
+  @Metric("Adaptive decommission: raw (pre-EMA) avg RPC queue time (ms) sampled "
+      + "on the last tick")
+  MutableGaugeLong decommissionAdaptiveRawRpcQueueTimeMs;
+  @Metric("Adaptive decommission: ticks the controller ramped the limit up")
+  MutableCounterLong decommissionAdaptiveRampUps;
+  @Metric("Adaptive decommission: ticks the controller ramped the limit down")
+  MutableCounterLong decommissionAdaptiveRampDowns;
+  @Metric("Adaptive decommission: ticks the controller held the limit (deadband)")
+  MutableCounterLong decommissionAdaptiveHolds;
+  @Metric("Adaptive decommission: ticks a hard override forced the limit to the floor")
+  MutableCounterLong decommissionAdaptiveForceMins;
+  @Metric("Adaptive decommission: ticks the load signal was unavailable (fail open)")
+  MutableCounterLong decommissionAdaptiveSignalUnavailable;
 
   @Metric("Number of file system operations")
   public long totalFileOps(){
@@ -336,6 +366,50 @@ public class NameNodeMetrics {
 
   public void setBlockOpsQueued(int size) {
     blockOpsQueued.set(size);
+  }
+
+  public void setDecommissionAdaptiveActive(int active) {
+    decommissionAdaptiveActive.set(active);
+  }
+
+  public void setDecommissionAdaptivePendingLimit(int limit) {
+    decommissionAdaptivePendingLimit.set(limit);
+  }
+
+  public void setDecommissionAdaptiveMinPendingLimit(int limit) {
+    decommissionAdaptiveMinPendingLimit.set(limit);
+  }
+
+  public void setDecommissionAdaptiveMaxPendingLimit(int limit) {
+    decommissionAdaptiveMaxPendingLimit.set(limit);
+  }
+
+  public void setDecommissionAdaptiveRpcQueueTimeMs(long queueTimeMs) {
+    decommissionAdaptiveRpcQueueTimeMs.set(queueTimeMs);
+  }
+
+  public void setDecommissionAdaptiveRawRpcQueueTimeMs(long queueTimeMs) {
+    decommissionAdaptiveRawRpcQueueTimeMs.set(queueTimeMs);
+  }
+
+  public void incrDecommissionAdaptiveRampUps() {
+    decommissionAdaptiveRampUps.incr();
+  }
+
+  public void incrDecommissionAdaptiveRampDowns() {
+    decommissionAdaptiveRampDowns.incr();
+  }
+
+  public void incrDecommissionAdaptiveHolds() {
+    decommissionAdaptiveHolds.incr();
+  }
+
+  public void incrDecommissionAdaptiveForceMins() {
+    decommissionAdaptiveForceMins.incr();
+  }
+
+  public void incrDecommissionAdaptiveSignalUnavailable() {
+    decommissionAdaptiveSignalUnavailable.incr();
   }
 
   public void setDeleteBlocksQueued(int size) {

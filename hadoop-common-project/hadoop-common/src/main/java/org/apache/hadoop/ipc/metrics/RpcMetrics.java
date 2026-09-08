@@ -331,6 +331,23 @@ public class RpcMetrics {
   }
 
   /**
+   * Returns the number of RPC queue-time samples seen in the last interval.
+   * @return long
+   */
+  public long getQueueSampleCount() {
+    return rpcQueueTime.lastStat().numSamples();
+  }
+
+  /**
+   * Returns the mean RPC queue time (in the configured metrics time unit,
+   * milliseconds by default) over the last interval.
+   * @return double
+   */
+  public double getQueueMean() {
+    return rpcQueueTime.lastStat().mean();
+  }
+
+  /**
    * Returns the number of slow calls.
    * @return long
    */

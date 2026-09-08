@@ -1164,6 +1164,127 @@
 </property>
 
 <property>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.enabled</name>
+  <value>false</value>
+  <description>
+    HubSpot: only used when dfs.namenode.decommission.monitor.class is set to
+    org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminAdaptiveBackoffMonitor.
+    When true, the pending replication limit is scaled dynamically each monitor
+    tick between the min and max limits below based on NameNode load, so
+    decommission-driven replication runs aggressively when the NameNode is
+    healthy and backs off when it is busy. When false, the monitor behaves
+    exactly like the stock backoff monitor and uses
+    dfs.namenode.decommission.backoff.monitor.pending.limit. This property is
+    reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.min.pending.limit</name>
+  <value>100</value>
+  <description>
+    HubSpot: the floor for the adaptive pending replication limit, applied when
+    the NameNode is considered busy. Must be greater than zero so decommission
+    never fully stalls. Only used by DatanodeAdminAdaptiveBackoffMonitor with
+    adaptive pacing enabled. Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.max.pending.limit</name>
+  <value>10000</value>
+  <description>
+    HubSpot: the ceiling for the adaptive pending replication limit, applied
+    when the NameNode is considered healthy. When unset, it inherits the
+    configured value of dfs.namenode.decommission.backoff.monitor.pending.limit
+    (whose own default is 10000) rather than a fixed constant, so enabling
+    adaptive pacing never lowers peak decommission throughput below what the
+    stock backoff monitor was already doing. Only used by
+    DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.time.ms</name>
+  <value>1</value>
+  <description>
+    HubSpot: the average RPC queue time (in the RPC metrics time unit,
+    milliseconds by default) at or below which the NameNode is considered
+    healthy; the feedback controller ramps the pending replication limit UP by
+    ramp.up.step each tick while at/below this value. This and the busy threshold
+    bound a deadband within which the limit is held (hysteresis). Only used by
+    DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.busy.rpc.queue.time.ms</name>
+  <value>50</value>
+  <description>
+    HubSpot: the average RPC queue time (in the RPC metrics time unit,
+    milliseconds by default) at or above which the NameNode is considered busy;
+    the feedback controller ramps the pending replication limit DOWN by
+    ramp.down.step each tick while at/above this value. Must be greater than
+    dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.time.ms. Only used
+    by DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.ramp.up.step</name>
+  <value>500</value>
+  <description>
+    HubSpot: how many blocks the feedback controller adds to the effective
+    pending replication limit each tick while the NameNode is healthy. Smaller
+    than ramp.down.step by default so the limit re-expands gradually (slow up).
+    Only used by DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing
+    enabled. Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.ramp.down.step</name>
+  <value>2000</value>
+  <description>
+    HubSpot: how many blocks the feedback controller subtracts from the effective
+    pending replication limit each tick while the NameNode is busy. Larger than
+    ramp.up.step by default so the monitor yields to foreground traffic quickly
+    (fast down), analogous to AIMD. Only used by
+    DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.signal.ema.window.ms</name>
+  <value>0</value>
+  <description>
+    HubSpot: optional exponentially-weighted-moving-average smoothing window (in
+    milliseconds) applied to the RPC queue-time signal across monitor ticks, with
+    alpha = tickInterval / (window + tickInterval). 0 disables cross-tick
+    smoothing and uses the RPC metrics windowed mean directly. Only used by
+    DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.decommission.backoff.monitor.busy.rpc.processing.time.ms</name>
+  <value>-1</value>
+  <description>
+    HubSpot: optional secondary gate. When set to a positive value, if the
+    NameNode's rolling mean RPC processing time in milliseconds reaches this
+    threshold the effective pending limit is forced to the minimum regardless of
+    call-queue length. A value of -1 disables this gate. Only used by
+    DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
+    Reconfigurable at runtime.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.redundancy.interval.seconds</name>
   <value>3</value>
   <description>The periodicity in seconds with which the namenode computes 
