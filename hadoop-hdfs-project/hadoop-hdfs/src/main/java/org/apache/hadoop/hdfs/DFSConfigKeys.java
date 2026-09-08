@@ -994,17 +994,12 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       = "dfs.namenode.decommission.backoff.monitor.signal.ema.window.ms";
   public static final long
       DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS_DEFAULT = 0;
-  // Optional hard overrides that immediately slam the limit to the floor.
+  // Optional hard override that immediately slams the limit to the floor.
   public static final String
       DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS
       = "dfs.namenode.decommission.backoff.monitor.busy.rpc.processing.time.ms";
   public static final long
       DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS_DEFAULT = -1;
-  public static final String
-      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS
-      = "dfs.namenode.decommission.backoff.monitor.max.low.redundancy.blocks";
-  public static final long
-      DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_LOW_REDUNDANCY_BLOCKS_DEFAULT = -1;
   public static final String  DFS_NAMENODE_HANDLER_COUNT_KEY = "dfs.namenode.handler.count";
   public static final int     DFS_NAMENODE_HANDLER_COUNT_DEFAULT = 10;
   public static final String  DFS_NAMENODE_LIFELINE_HANDLER_RATIO_KEY =

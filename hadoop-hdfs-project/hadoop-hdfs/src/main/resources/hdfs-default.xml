@@ -1285,19 +1285,6 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.max.low.redundancy.blocks</name>
-  <value>-1</value>
-  <description>
-    HubSpot: optional safety ceiling. When set to a positive value, if the count
-    of low-redundancy blocks (minus the blocks currently pending reconstruction,
-    a proxy for the monitor's own in-flight work) exceeds this threshold the
-    effective pending limit is forced to the minimum. A value of -1 disables this
-    cap. Only used by DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing
-    enabled. Reconfigurable at runtime.
-  </description>
-</property>
-
-<property>
   <name>dfs.namenode.redundancy.interval.seconds</name>
   <value>3</value>
   <description>The periodicity in seconds with which the namenode computes 
