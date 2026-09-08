@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.server.namenode.Namesystem;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -251,6 +252,23 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
     when(fsn.isRunning()).thenReturn(false);
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(conf, fsn);
     m.run();
+    assertEquals(7777, m.getPendingRepLimit());
+  }
+
+  @Test
+  public void testRunFailsOpenWhenNamesystemIsNotFsNamesystem() {
+    // The base class types namesystem as the Namesystem interface; a non-
+    // FSNamesystem (e.g. a mock) must not throw a ClassCastException every tick.
+    Configuration conf = baseConf();
+    conf.setInt(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_PENDING_LIMIT, 7777);
+    Namesystem ns = mock(Namesystem.class);
+    when(ns.isRunning()).thenReturn(false);
+    DatanodeAdminAdaptiveBackoffMonitor m = new DatanodeAdminAdaptiveBackoffMonitor();
+    m.setBlockManager(mock(BlockManager.class));
+    m.setNameSystem(ns);
+    m.setConf(conf);
+    m.run(); // must not throw, and must hold the limit
     assertEquals(7777, m.getPendingRepLimit());
   }
 
