@@ -82,32 +82,46 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
   @Test
   public void testRampsUpWhenHealthy() {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
-    assertEquals(600, m.nextControllerLimit(100, 0, false));
-    assertEquals(600, m.nextControllerLimit(100, HEALTHY_MS, false)); // boundary
-    // clamps at the ceiling
-    assertEquals(MAX, m.nextControllerLimit(9800, 0, false));
+    DatanodeAdminAdaptiveBackoffMonitor.ControllerDecision d =
+        m.nextControllerDecision(100, 0, false);
+    assertEquals(600, d.limit);
+    assertEquals(DatanodeAdminAdaptiveBackoffMonitor.ControllerAction.RAMP_UP, d.action);
+    assertEquals(600, m.nextControllerDecision(100, HEALTHY_MS, false).limit); // boundary
+    // clamps at the ceiling but is still classified as a ramp-up (intent)
+    DatanodeAdminAdaptiveBackoffMonitor.ControllerDecision capped =
+        m.nextControllerDecision(9800, 0, false);
+    assertEquals(MAX, capped.limit);
+    assertEquals(DatanodeAdminAdaptiveBackoffMonitor.ControllerAction.RAMP_UP, capped.action);
   }
 
   @Test
   public void testRampsDownWhenBusy() {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
-    assertEquals(8000, m.nextControllerLimit(10000, 100, false));
-    assertEquals(8000, m.nextControllerLimit(10000, BUSY_MS, false)); // boundary
-    // clamps at the floor
-    assertEquals(MIN, m.nextControllerLimit(500, 100, false));
+    DatanodeAdminAdaptiveBackoffMonitor.ControllerDecision d =
+        m.nextControllerDecision(10000, 100, false);
+    assertEquals(8000, d.limit);
+    assertEquals(DatanodeAdminAdaptiveBackoffMonitor.ControllerAction.RAMP_DOWN, d.action);
+    assertEquals(8000, m.nextControllerDecision(10000, BUSY_MS, false).limit); // boundary
+    assertEquals(MIN, m.nextControllerDecision(500, 100, false).limit); // clamps at floor
   }
 
   @Test
   public void testHoldsInsideDeadband() {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
     // strictly between healthy (1) and busy (50): hold
-    assertEquals(5000, m.nextControllerLimit(5000, 25, false));
+    DatanodeAdminAdaptiveBackoffMonitor.ControllerDecision d =
+        m.nextControllerDecision(5000, 25, false);
+    assertEquals(5000, d.limit);
+    assertEquals(DatanodeAdminAdaptiveBackoffMonitor.ControllerAction.HOLD, d.action);
   }
 
   @Test
   public void testForceMinOverridesHealthySignal() {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
-    assertEquals(MIN, m.nextControllerLimit(10000, 0 /* healthy */, true));
+    DatanodeAdminAdaptiveBackoffMonitor.ControllerDecision d =
+        m.nextControllerDecision(10000, 0 /* healthy */, true);
+    assertEquals(MIN, d.limit);
+    assertEquals(DatanodeAdminAdaptiveBackoffMonitor.ControllerAction.FORCE_MIN, d.action);
   }
 
   @Test
@@ -115,11 +129,11 @@ public class TestDatanodeAdminAdaptiveBackoffMonitor {
     DatanodeAdminAdaptiveBackoffMonitor m = newMonitor(baseConf(), null);
     int limit = MIN;
     for (int i = 0; i < 100 && limit < MAX; i++) {
-      limit = m.nextControllerLimit(limit, 0, false);
+      limit = m.nextControllerDecision(limit, 0, false).limit;
     }
     assertEquals(MAX, limit);
     // once at the ceiling a healthy signal keeps it pinned (no overshoot)
-    assertEquals(MAX, m.nextControllerLimit(limit, 0, false));
+    assertEquals(MAX, m.nextControllerDecision(limit, 0, false).limit);
   }
 
   // ---- EWMA smoothing (pure) ----
