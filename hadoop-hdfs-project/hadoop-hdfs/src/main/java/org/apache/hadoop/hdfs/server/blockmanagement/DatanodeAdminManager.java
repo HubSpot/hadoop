@@ -415,7 +415,7 @@ public class DatanodeAdminManager {
   }
 
   private void ensureDisabledOrPositive(long val, String key) {
-    checkArgument(
+    Preconditions.checkArgument(
         (val == -1 || val > 0),
         key + " = '" + val + "' is invalid. " +
             "It should be -1 (disabled) or a positive, non-zero value.");
@@ -571,14 +571,14 @@ public class DatanodeAdminManager {
   }
 
   private void ensurePositiveLong(long val, String key) {
-    checkArgument(
+    Preconditions.checkArgument(
         (val > 0),
         key + " = '" + val + "' is invalid. " +
             "It should be a positive, non-zero value.");
   }
 
   private void ensureNonNegativeLong(long val, String key) {
-    checkArgument(
+    Preconditions.checkArgument(
         (val >= 0),
         key + " = '" + val + "' is invalid. It should be zero or greater.");
   }
