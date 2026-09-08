@@ -20,6 +20,8 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -247,6 +249,11 @@ public class DatanodeAdminAdaptiveBackoffMonitor
         LOG.warn("Failed to compute adaptive pending replication limit; "
             + "leaving it at {}.", getPendingRepLimit(), e);
       }
+    } else {
+      // Disabled (or self-disabled by validateAndFixup on a broken config):
+      // reflect that in the "active" gauge so a dashboard can tell "off" apart
+      // from "on but not moving".
+      recordInactive();
     }
     super.run();
   }
@@ -272,11 +279,13 @@ public class DatanodeAdminAdaptiveBackoffMonitor
             namesystem == null ? "null" : namesystem.getClass().getName());
         warnedMissingFsNamesystem = true;
       }
+      recordInactive();
       return getPendingRepLimit();
     }
     final FSNamesystem fsn = (FSNamesystem) namesystem;
     final long queueTimeMs = fsn.getAvgRpcQueueTimeMs();
     if (queueTimeMs < 0) {
+      recordSignalUnavailable();
       return getPendingRepLimit();
     }
     // Seed the integral state from the current limit so enabling the controller
@@ -287,9 +296,64 @@ public class DatanodeAdminAdaptiveBackoffMonitor
     }
     double smoothed = smoothSignal(signalEma, queueTimeMs);
     signalEma = smoothed;
-    controllerLimit =
-        nextControllerLimit(controllerLimit, smoothed, safetyOverrideTripped(fsn));
+    ControllerDecision decision =
+        nextControllerDecision(controllerLimit, smoothed, safetyOverrideTripped(fsn));
+    controllerLimit = decision.limit;
+    publishActiveMetrics(queueTimeMs, smoothed, decision);
     return controllerLimit;
+  }
+
+  /**
+   * Publish the full tick outcome as NameNode gauges/counters, so adaptation can
+   * be charted, alerted on, and correlated with foreground latency instead of
+   * grepped out of the per-tick INFO log. Best-effort: the metrics singleton can
+   * be null in some test / non-NameNode paths.
+   */
+  private void publishActiveMetrics(long rawQueueTimeMs, double smoothedQueueTimeMs,
+      ControllerDecision decision) {
+    NameNodeMetrics metrics = NameNode.getNameNodeMetrics();
+    if (metrics == null) {
+      return;
+    }
+    metrics.setDecommissionAdaptiveActive(1);
+    metrics.setDecommissionAdaptiveRawRpcQueueTimeMs(rawQueueTimeMs);
+    metrics.setDecommissionAdaptiveRpcQueueTimeMs(Math.round(smoothedQueueTimeMs));
+    metrics.setDecommissionAdaptivePendingLimit(decision.limit);
+    metrics.setDecommissionAdaptiveMinPendingLimit(minPendingLimit);
+    metrics.setDecommissionAdaptiveMaxPendingLimit(maxPendingLimit);
+    switch (decision.action) {
+      case RAMP_UP:
+        metrics.incrDecommissionAdaptiveRampUps();
+        break;
+      case RAMP_DOWN:
+        metrics.incrDecommissionAdaptiveRampDowns();
+        break;
+      case HOLD:
+        metrics.incrDecommissionAdaptiveHolds();
+        break;
+      case FORCE_MIN:
+        metrics.incrDecommissionAdaptiveForceMins();
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Mark the controller inactive this tick (disabled, or degraded/unwired). */
+  private void recordInactive() {
+    NameNodeMetrics metrics = NameNode.getNameNodeMetrics();
+    if (metrics != null) {
+      metrics.setDecommissionAdaptiveActive(0);
+    }
+  }
+
+  /** Enabled but the load signal was unavailable this tick (fail open). */
+  private void recordSignalUnavailable() {
+    NameNodeMetrics metrics = NameNode.getNameNodeMetrics();
+    if (metrics != null) {
+      metrics.setDecommissionAdaptiveActive(0);
+      metrics.incrDecommissionAdaptiveSignalUnavailable();
+    }
   }
 
   /**
@@ -306,27 +370,47 @@ public class DatanodeAdminAdaptiveBackoffMonitor
     return false;
   }
 
+  /** The action the controller took on a tick (drives the metric counters). */
+  @VisibleForTesting
+  enum ControllerAction { RAMP_UP, RAMP_DOWN, HOLD, FORCE_MIN }
+
+  /** The outcome of one control step: the new limit and how it was reached. */
+  @VisibleForTesting
+  static final class ControllerDecision {
+    final int limit;
+    final ControllerAction action;
+
+    ControllerDecision(int limit, ControllerAction action) {
+      this.limit = limit;
+      this.action = action;
+    }
+  }
+
   /**
    * One integral-control step. Package-visible and pure so the ramp/deadband
-   * behavior can be unit-tested without running the lock-holding {@link #run()}.
+   * logic (and the action classification that drives the metric counters) can be
+   * unit-tested without running the lock-holding {@link #run()}. The returned
+   * limit is clamped to {@code [min, max]}.
    *
    * @param current the limit chosen last tick
    * @param smoothedSignal the smoothed avg RPC queue time (ms)
    * @param forceMin whether a hard override demands the floor this tick
-   * @return the new limit, clamped to {@code [min, max]}
    */
   @VisibleForTesting
-  int nextControllerLimit(int current, double smoothedSignal, boolean forceMin) {
+  ControllerDecision nextControllerDecision(int current, double smoothedSignal,
+      boolean forceMin) {
     if (forceMin) {
-      return minPendingLimit;
+      return new ControllerDecision(minPendingLimit, ControllerAction.FORCE_MIN);
     }
     if (smoothedSignal <= healthyRpcQueueTimeMs) {
-      return Math.min(maxPendingLimit, current + rampUpStep);
+      return new ControllerDecision(
+          Math.min(maxPendingLimit, current + rampUpStep), ControllerAction.RAMP_UP);
     }
     if (smoothedSignal >= busyRpcQueueTimeMs) {
-      return Math.max(minPendingLimit, current - rampDownStep);
+      return new ControllerDecision(
+          Math.max(minPendingLimit, current - rampDownStep), ControllerAction.RAMP_DOWN);
     }
-    return current; // within the deadband: hold
+    return new ControllerDecision(current, ControllerAction.HOLD); // deadband: hold
   }
 
   /**
