@@ -104,6 +104,8 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   private volatile int controllerLimit = -1;
   /** EWMA state for the signal; {@code < 0} means "not seeded yet". */
   private volatile double signalEma = -1.0;
+  /** Ensures the "namesystem is not an FSNamesystem" warning is logged once. */
+  private volatile boolean warnedMissingFsNamesystem = false;
 
   DatanodeAdminAdaptiveBackoffMonitor() {
   }
@@ -259,10 +261,26 @@ public class DatanodeAdminAdaptiveBackoffMonitor
   /**
    * Sample the load signal, smooth it, and advance the controller by one tick.
    * Fails open (returns the current limit without advancing controller state) if
-   * the RPC server is not yet wired up, which can happen briefly in some
-   * MiniDFSCluster / standby paths.
+   * the load signal is unavailable - either the RPC server is not yet wired up
+   * (brief, in some MiniDFSCluster / standby paths) or the namesystem is not an
+   * {@link FSNamesystem} (so the load accessors do not exist).
    */
   private int computeAdaptivePendingLimit() {
+    // The load accessors live on FSNamesystem, but the base class types this
+    // field as the Namesystem interface. Guard the cast instead of assuming the
+    // production wiring: on anything else, fail open (hold the limit, behaving
+    // like the stock backoff monitor) and warn exactly once rather than throwing
+    // a ClassCastException every tick into run()'s catch block.
+    if (!(namesystem instanceof FSNamesystem)) {
+      if (!warnedMissingFsNamesystem) {
+        LOG.warn("Adaptive decommission pacing requires the namesystem to be an "
+            + "FSNamesystem to read NameNode load signals, but it is {}. Holding "
+            + "the pending replication limit and not adapting.",
+            namesystem == null ? "null" : namesystem.getClass().getName());
+        warnedMissingFsNamesystem = true;
+      }
+      return getPendingRepLimit();
+    }
     final FSNamesystem fsn = (FSNamesystem) namesystem;
     final long queueTimeMs = fsn.getAvgRpcQueueTimeMs();
     if (queueTimeMs < 0) {
