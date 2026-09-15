@@ -296,9 +296,15 @@ public class DatanodeAdminAdaptiveBackoffMonitor
     }
     double smoothed = smoothSignal(signalEma, queueTimeMs);
     signalEma = smoothed;
+    int previousLimit = controllerLimit;
     ControllerDecision decision =
         nextControllerDecision(controllerLimit, smoothed, safetyOverrideTripped(fsn));
     controllerLimit = decision.limit;
+    LOG.info("Adaptive decommission pacing: action={} pendingRepLimit {} -> {} "
+        + "(rawQueueTimeMs={}, smoothedMs={}, healthy={}, busy={}, min={}, max={})",
+        decision.action, previousLimit, decision.limit, queueTimeMs,
+        Math.round(smoothed), healthyRpcQueueTimeMs, busyRpcQueueTimeMs,
+        minPendingLimit, maxPendingLimit);
     publishActiveMetrics(queueTimeMs, smoothed, decision);
     return controllerLimit;
   }
