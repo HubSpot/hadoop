@@ -240,7 +240,13 @@ public class DatanodeAdminAdaptiveBackoffMonitor
 
   @Override
   public void run() {
-    if (adaptiveEnabled) {
+    // The monitor thread is started from BlockManager.activate(), which runs in
+    // FSNamesystem.startCommonServices() on BOTH the active and standby NameNode.
+    // Only the active NN actually schedules decommission re-replication (gated on
+    // isPopulatingReplQueues()), so adaptation only makes sense there. On a standby
+    // the load signal is its own near-idle client RPC queue, which would make the
+    // controller ramp to the ceiling and publish misleading metrics/logs. Skip it.
+    if (adaptiveEnabled && blockManager.isPopulatingReplQueues()) {
       try {
         setPendingRepLimit(computeAdaptivePendingLimit());
       } catch (Exception e) {
@@ -250,9 +256,9 @@ public class DatanodeAdminAdaptiveBackoffMonitor
             + "leaving it at {}.", getPendingRepLimit(), e);
       }
     } else {
-      // Disabled (or self-disabled by validateAndFixup on a broken config):
-      // reflect that in the "active" gauge so a dashboard can tell "off" apart
-      // from "on but not moving".
+      // Disabled, self-disabled by validateAndFixup on a broken config, or running
+      // on a standby NN: reflect that in the "active" gauge so a dashboard can tell
+      // "off" apart from "on but not moving".
       recordInactive();
     }
     super.run();
@@ -294,17 +300,25 @@ public class DatanodeAdminAdaptiveBackoffMonitor
       controllerLimit =
           Math.max(minPendingLimit, Math.min(maxPendingLimit, getPendingRepLimit()));
     }
+    double prevEma = signalEma;
     double smoothed = smoothSignal(signalEma, queueTimeMs);
     signalEma = smoothed;
+    // Smoothing diagnostic: emaAlpha==1.0 means smoothing is OFF (windowMs<=0), so
+    // smoothed will always equal the raw sample. Any alpha<1.0 means smoothing is
+    // live and smoothed should diverge from rawSample as prevEma is blended in.
+    LOG.info("Adaptive decommission smoothing: emaAlpha={} (signalEmaWindowMs={}, "
+        + "tickIntervalMs={}) rawSample={} prevEma={} smoothed={}",
+        emaAlpha, signalEmaWindowMs, tickIntervalMs, queueTimeMs, prevEma, smoothed);
     int previousLimit = controllerLimit;
     ControllerDecision decision =
         nextControllerDecision(controllerLimit, smoothed, safetyOverrideTripped(fsn));
     controllerLimit = decision.limit;
     LOG.info("Adaptive decommission pacing: action={} pendingRepLimit {} -> {} "
-        + "(rawQueueTimeMs={}, smoothedMs={}, healthy={}, busy={}, min={}, max={})",
+        + "(rawQueueTimeMs={}, smoothedMs={}, healthy={}, busy={}, rampUpStep={}, "
+        + "rampDownStep={}, min={}, max={})",
         decision.action, previousLimit, decision.limit, queueTimeMs,
         Math.round(smoothed), healthyRpcQueueTimeMs, busyRpcQueueTimeMs,
-        minPendingLimit, maxPendingLimit);
+        rampUpStep, rampDownStep, minPendingLimit, maxPendingLimit);
     publishActiveMetrics(queueTimeMs, smoothed, decision);
     return controllerLimit;
   }
