@@ -300,25 +300,22 @@ public class DatanodeAdminAdaptiveBackoffMonitor
       controllerLimit =
           Math.max(minPendingLimit, Math.min(maxPendingLimit, getPendingRepLimit()));
     }
-    double prevEma = signalEma;
     double smoothed = smoothSignal(signalEma, queueTimeMs);
     signalEma = smoothed;
-    // Smoothing diagnostic: emaAlpha==1.0 means smoothing is OFF (windowMs<=0), so
-    // smoothed will always equal the raw sample. Any alpha<1.0 means smoothing is
-    // live and smoothed should diverge from rawSample as prevEma is blended in.
-    LOG.info("Adaptive decommission smoothing: emaAlpha={} (signalEmaWindowMs={}, "
-        + "tickIntervalMs={}) rawSample={} prevEma={} smoothed={}",
-        emaAlpha, signalEmaWindowMs, tickIntervalMs, queueTimeMs, prevEma, smoothed);
     int previousLimit = controllerLimit;
     ControllerDecision decision =
         nextControllerDecision(controllerLimit, smoothed, safetyOverrideTripped(fsn));
     controllerLimit = decision.limit;
-    LOG.info("Adaptive decommission pacing: action={} pendingRepLimit {} -> {} "
-        + "(rawQueueTimeMs={}, smoothedMs={}, healthy={}, busy={}, rampUpStep={}, "
-        + "rampDownStep={}, min={}, max={})",
-        decision.action, previousLimit, decision.limit, queueTimeMs,
-        Math.round(smoothed), healthyRpcQueueTimeMs, busyRpcQueueTimeMs,
-        rampUpStep, rampDownStep, minPendingLimit, maxPendingLimit);
+    // Log only when the effective limit actually moves, so this is a low-volume
+    // audit of real pacing decisions rather than a per-tick line. Full per-tick
+    // state (signal, action counts, min/max band) is on the NameNodeActivity
+    // metrics for dashboards/alerts.
+    if (previousLimit != decision.limit) {
+      LOG.info("Adaptive decommission pacing: action={} pendingRepLimit {} -> {} "
+          + "(rawQueueTimeMs={}, smoothedMs={})",
+          decision.action, previousLimit, decision.limit, queueTimeMs,
+          Math.round(smoothed));
+    }
     publishActiveMetrics(queueTimeMs, smoothed, decision);
     return controllerLimit;
   }

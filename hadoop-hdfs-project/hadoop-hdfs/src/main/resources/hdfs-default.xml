@@ -1243,7 +1243,7 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.min.pending.limit</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.min.pending.limit</name>
   <value>100</value>
   <description>
     HubSpot: the floor for the adaptive pending replication limit, applied when
@@ -1254,7 +1254,7 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.max.pending.limit</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.max.pending.limit</name>
   <value>10000</value>
   <description>
     HubSpot: the ceiling for the adaptive pending replication limit, applied
@@ -1269,7 +1269,7 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.time.ms</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.healthy.rpc.queue.time.ms</name>
   <value>1</value>
   <description>
     HubSpot: the average RPC queue time (in the RPC metrics time unit,
@@ -1283,21 +1283,21 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.busy.rpc.queue.time.ms</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.busy.rpc.queue.time.ms</name>
   <value>50</value>
   <description>
     HubSpot: the average RPC queue time (in the RPC metrics time unit,
     milliseconds by default) at or above which the NameNode is considered busy;
     the feedback controller ramps the pending replication limit DOWN by
     ramp.down.step each tick while at/above this value. Must be greater than
-    dfs.namenode.decommission.backoff.monitor.healthy.rpc.queue.time.ms. Only used
-    by DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
+    dfs.namenode.decommission.backoff.monitor.adaptive.healthy.rpc.queue.time.ms.
+    Only used by DatanodeAdminAdaptiveBackoffMonitor with adaptive pacing enabled.
     Reconfigurable at runtime.
   </description>
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.ramp.up.step</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.ramp.up.step</name>
   <value>500</value>
   <description>
     HubSpot: how many blocks the feedback controller adds to the effective
@@ -1309,7 +1309,7 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.ramp.down.step</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.ramp.down.step</name>
   <value>2000</value>
   <description>
     HubSpot: how many blocks the feedback controller subtracts from the effective
@@ -1322,7 +1322,7 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.signal.ema.window.ms</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.signal.ema.window.ms</name>
   <value>0</value>
   <description>
     HubSpot: optional exponentially-weighted-moving-average smoothing window (in
@@ -1335,7 +1335,7 @@
 </property>
 
 <property>
-  <name>dfs.namenode.decommission.backoff.monitor.busy.rpc.processing.time.ms</name>
+  <name>dfs.namenode.decommission.backoff.monitor.adaptive.busy.rpc.processing.time.ms</name>
   <value>-1</value>
   <description>
     HubSpot: optional secondary gate. When set to a positive value, if the
