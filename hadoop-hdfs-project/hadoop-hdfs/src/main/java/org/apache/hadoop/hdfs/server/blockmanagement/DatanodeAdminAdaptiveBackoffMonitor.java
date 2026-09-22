@@ -240,7 +240,13 @@ public class DatanodeAdminAdaptiveBackoffMonitor
 
   @Override
   public void run() {
-    if (adaptiveEnabled) {
+    // The monitor thread is started from BlockManager.activate(), which runs in
+    // FSNamesystem.startCommonServices() on BOTH the active and standby NameNode.
+    // Only the active NN actually schedules decommission re-replication (gated on
+    // isPopulatingReplQueues()), so adaptation only makes sense there. On a standby
+    // the load signal is its own near-idle client RPC queue, which would make the
+    // controller ramp to the ceiling and publish misleading metrics/logs. Skip it.
+    if (adaptiveEnabled && blockManager.isPopulatingReplQueues()) {
       try {
         setPendingRepLimit(computeAdaptivePendingLimit());
       } catch (Exception e) {
@@ -250,9 +256,9 @@ public class DatanodeAdminAdaptiveBackoffMonitor
             + "leaving it at {}.", getPendingRepLimit(), e);
       }
     } else {
-      // Disabled (or self-disabled by validateAndFixup on a broken config):
-      // reflect that in the "active" gauge so a dashboard can tell "off" apart
-      // from "on but not moving".
+      // Disabled, self-disabled by validateAndFixup on a broken config, or running
+      // on a standby NN: reflect that in the "active" gauge so a dashboard can tell
+      // "off" apart from "on but not moving".
       recordInactive();
     }
     super.run();
@@ -296,9 +302,20 @@ public class DatanodeAdminAdaptiveBackoffMonitor
     }
     double smoothed = smoothSignal(signalEma, queueTimeMs);
     signalEma = smoothed;
+    int previousLimit = controllerLimit;
     ControllerDecision decision =
         nextControllerDecision(controllerLimit, smoothed, safetyOverrideTripped(fsn));
     controllerLimit = decision.limit;
+    // Log only when the effective limit actually moves, so this is a low-volume
+    // audit of real pacing decisions rather than a per-tick line. Full per-tick
+    // state (signal, action counts, min/max band) is on the NameNodeActivity
+    // metrics for dashboards/alerts.
+    if (previousLimit != decision.limit) {
+      LOG.info("Adaptive decommission pacing: action={} pendingRepLimit {} -> {} "
+          + "(rawQueueTimeMs={}, smoothedMs={})",
+          decision.action, previousLimit, decision.limit, queueTimeMs,
+          Math.round(smoothed));
+    }
     publishActiveMetrics(queueTimeMs, smoothed, decision);
     return controllerLimit;
   }
