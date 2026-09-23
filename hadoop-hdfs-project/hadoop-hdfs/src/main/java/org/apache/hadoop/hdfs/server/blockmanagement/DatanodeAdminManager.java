@@ -441,4 +441,173 @@ public class DatanodeAdminManager {
         key + " = '" + val + "' is invalid. " +
             "It should be a positive, non-zero integer value.");
   }
+
+  private void ensureDisabledOrPositive(long val, String key) {
+    checkArgument(
+        (val == -1 || val > 0),
+        key + " = '" + val + "' is invalid. " +
+            "It should be -1 (disabled) or a positive, non-zero value.");
+  }
+
+  // HubSpot: runtime-reconfigurable knobs for the adaptive decommission monitor.
+  // These only apply when the configured monitor is a
+  // DatanodeAdminAdaptiveBackoffMonitor; otherwise they raise an
+  // IllegalArgumentException that the NameNode surfaces as a
+  // ReconfigurationException.
+
+  private DatanodeAdminAdaptiveBackoffMonitor requireHubSpotMonitor(String key) {
+    if (!(monitor instanceof DatanodeAdminAdaptiveBackoffMonitor)) {
+      throw new IllegalArgumentException(key
+          + " can only be reconfigured when "
+          + DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MONITOR_CLASS + " is "
+          + DatanodeAdminAdaptiveBackoffMonitor.class.getName()
+          + ", but the active monitor is " + monitor.getClass().getName());
+    }
+    return (DatanodeAdminAdaptiveBackoffMonitor) monitor;
+  }
+
+  // Each refresh validates the individual value, applies it, then re-runs the
+  // monitor's validateAndFixup() so the cross-field invariants it establishes at
+  // startup (max >= min, busy > healthy, and "disable adaptation on a broken
+  // config") also hold after runtime reconfiguration - otherwise -reconfig could
+  // leave the controller in a state startup would never allow, e.g. re-enabling
+  // adaptation with busy <= healthy still in place.
+
+  public void refreshDecommissionAdaptiveEnabled(boolean enabled, String key) {
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setAdaptiveEnabled(enabled);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public boolean getDecommissionAdaptiveEnabled() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_ADAPTIVE_ENABLED)
+        .isAdaptiveEnabled();
+  }
+
+  public void refreshDecommissionMinPendingLimit(int val, String key) {
+    ensurePositiveInt(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setMinPendingLimit(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public int getDecommissionMinPendingLimit() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MIN_PENDING_LIMIT)
+        .getMinPendingLimit();
+  }
+
+  public void refreshDecommissionMaxPendingLimit(int val, String key) {
+    ensurePositiveInt(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setMaxPendingLimit(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public int getDecommissionMaxPendingLimit() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_MAX_PENDING_LIMIT)
+        .getMaxPendingLimit();
+  }
+
+  public void refreshDecommissionHealthyRpcQueueTimeMs(long val, String key) {
+    ensurePositiveLong(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setHealthyRpcQueueTimeMs(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public long getDecommissionHealthyRpcQueueTimeMs() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_HEALTHY_RPC_QUEUE_TIME_MS)
+        .getHealthyRpcQueueTimeMs();
+  }
+
+  public void refreshDecommissionBusyRpcQueueTimeMs(long val, String key) {
+    ensurePositiveLong(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setBusyRpcQueueTimeMs(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public long getDecommissionBusyRpcQueueTimeMs() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_QUEUE_TIME_MS)
+        .getBusyRpcQueueTimeMs();
+  }
+
+  public void refreshDecommissionBusyRpcProcessingTimeMs(long val, String key) {
+    ensureDisabledOrPositive(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setBusyRpcProcessingTimeMs(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public long getDecommissionBusyRpcProcessingTimeMs() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_BUSY_RPC_PROCESSING_TIME_MS)
+        .getBusyRpcProcessingTimeMs();
+  }
+
+  public void refreshDecommissionRampUpStep(int val, String key) {
+    ensurePositiveInt(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setRampUpStep(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public int getDecommissionRampUpStep() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_UP_STEP)
+        .getRampUpStep();
+  }
+
+  public void refreshDecommissionRampDownStep(int val, String key) {
+    ensurePositiveInt(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setRampDownStep(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public int getDecommissionRampDownStep() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_RAMP_DOWN_STEP)
+        .getRampDownStep();
+  }
+
+  public void refreshDecommissionSignalEmaWindowMs(long val, String key) {
+    ensureNonNegativeLong(val, key);
+    DatanodeAdminAdaptiveBackoffMonitor monitor = requireHubSpotMonitor(key);
+    monitor.setSignalEmaWindowMs(val);
+    monitor.validateAndFixup();
+  }
+
+  @VisibleForTesting
+  public long getDecommissionSignalEmaWindowMs() {
+    return requireHubSpotMonitor(
+        DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BACKOFF_MONITOR_SIGNAL_EMA_WINDOW_MS)
+        .getSignalEmaWindowMs();
+  }
+
+  private void ensurePositiveLong(long val, String key) {
+    checkArgument(
+        (val > 0),
+        key + " = '" + val + "' is invalid. " +
+            "It should be a positive, non-zero value.");
+  }
+
+  private void ensureNonNegativeLong(long val, String key) {
+    checkArgument(
+        (val >= 0),
+        key + " = '" + val + "' is invalid. It should be zero or greater.");
+  }
 }
