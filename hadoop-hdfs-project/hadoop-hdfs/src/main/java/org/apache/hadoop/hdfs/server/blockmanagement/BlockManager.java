@@ -4157,7 +4157,8 @@ public class BlockManager implements BlockStatsMXBean {
    * appropriate queues if necessary, and returns a result code indicating
    * what happened with it.
    */
-  private MisReplicationResult processMisReplicatedBlock(BlockInfo block) {
+  @VisibleForTesting
+  MisReplicationResult processMisReplicatedBlock(BlockInfo block) {
     if (block.isDeleted()) {
       // block does not belong to any file
       addToInvalidates(block);
@@ -4173,14 +4174,20 @@ public class BlockManager implements BlockStatsMXBean {
     NumberReplicas num = countNodes(block);
     final int numCurrentReplica = num.liveReplicas();
     // add to low redundancy queue if need to be
+    boolean addedToNeededReconstruction = false;
     if (isNeededReconstruction(block, num)) {
-      if (neededReconstruction.add(block, numCurrentReplica,
-          num.readOnlyReplicas(), num.outOfServiceReplicas(),
-          expectedRedundancy)) {
-        return MisReplicationResult.UNDER_REPLICATED;
-      }
+      addedToNeededReconstruction = neededReconstruction.add(block,
+          numCurrentReplica, num.readOnlyReplicas(),
+          num.outOfServiceReplicas(), expectedRedundancy);
     }
 
+    // A block can simultaneously need reconstruction for placement and have
+    // redundant internal blocks to reclaim. This is possible for erasure-coded
+    // groups: a group over-concentrated on one failure domain is queued for
+    // reconstruction while also holding duplicate internal blocks that occupy
+    // capacity. Process any excess redundancy even when the block was just
+    // queued for reconstruction, so those duplicates are reclaimed and the
+    // reconstruction has somewhere to place the relieving copy.
     if (shouldProcessExtraRedundancy(num, expectedRedundancy)) {
       // extra redundancy block
       if (!processExtraRedundancyBlockWithoutPostpone(block, expectedRedundancy,
@@ -4189,7 +4196,11 @@ public class BlockManager implements BlockStatsMXBean {
       }
       return MisReplicationResult.OVER_REPLICATED;
     }
-    
+
+    if (addedToNeededReconstruction) {
+      return MisReplicationResult.UNDER_REPLICATED;
+    }
+
     return MisReplicationResult.OK;
   }
   
@@ -4392,6 +4403,13 @@ public class BlockManager implements BlockStatsMXBean {
     }
 
     BlockPlacementPolicy placementPolicy = placementPolicies.getPolicy(STRIPED);
+    // BlockPlacementPolicyErasureCoding keeps extra copies of an internal block
+    // on purpose to keep every failure domain within its loss budget. Such a
+    // copy may only be reclaimed when removing it does not make the group less
+    // safe; redundant copies that protect no domain are still reclaimed so their
+    // capacity can be reused to fix a genuinely over-concentrated domain.
+    final boolean durabilityAware =
+        placementPolicy instanceof BlockPlacementPolicyErasureCoding;
     // for each duplicated index, delete some replicas until only one left
     for (int targetIndex = duplicated.nextSetBit(0); targetIndex >= 0;
          targetIndex = duplicated.nextSetBit(targetIndex + 1)) {
@@ -4415,12 +4433,63 @@ public class BlockManager implements BlockStatsMXBean {
         Preconditions.checkArgument(candidates.containsAll(replicasToDelete),
             "The EC replicas to be deleted are not in the candidate list");
         for (DatanodeStorageInfo chosen : replicasToDelete) {
+          if (durabilityAware && removalWouldReduceSafety(
+              sblk, nonExcess, chosen,
+              (BlockPlacementPolicyErasureCoding) placementPolicy)) {
+            // This copy is protecting a failure domain from over-concentration,
+            // so keep it as intentional over-replication.
+            continue;
+          }
           processChosenExcessRedundancy(nonExcess, chosen, delNodeHint.getGracePeriod(), storedBlock);
           candidates.remove(chosen);
         }
       }
       duplicated.clear(targetIndex);
     }
+  }
+
+  /**
+   * Whether removing {@code excluded} from the group's live storages would make
+   * the erasure-coded placement less safe, i.e. increase the number of extra
+   * copies the policy requires. Only copies that actually protect a failure
+   * domain from over-concentration are kept this way; a redundant copy that does
+   * not improve safety is still reclaimed so its capacity can be reused.
+   */
+  private boolean removalWouldReduceSafety(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
+      BlockPlacementPolicyErasureCoding placementPolicy) {
+    int withCopy =
+        ecAdditionalReplicasRequired(sblk, nonExcess, null, placementPolicy);
+    int withoutCopy =
+        ecAdditionalReplicasRequired(sblk, nonExcess, excluded, placementPolicy);
+    return withoutCopy > withCopy;
+  }
+
+  /**
+   * The number of extra copies the EC placement policy requires for the group
+   * backed by {@code nonExcess}, optionally ignoring the {@code excluded}
+   * storage.
+   */
+  private int ecAdditionalReplicasRequired(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
+      BlockPlacementPolicyErasureCoding placementPolicy) {
+    List<DatanodeInfo> locs = new ArrayList<>();
+    List<Byte> indices = new ArrayList<>();
+    for (DatanodeStorageInfo storage : nonExcess) {
+      if (storage.equals(excluded)) {
+        continue;
+      }
+      locs.add(storage.getDatanodeDescriptor());
+      indices.add((byte) sblk.getStorageBlockIndex(storage));
+    }
+    byte[] blockIndices = new byte[indices.size()];
+    for (int i = 0; i < blockIndices.length; i++) {
+      blockIndices[i] = indices.get(i);
+    }
+    return placementPolicy.verifyBlockPlacement(
+        locs.toArray(new DatanodeInfo[0]), blockIndices,
+        sblk.getRealTotalBlockNum(), sblk.getParityBlockNum())
+        .getAdditionalReplicasRequired();
   }
 
   private void processChosenExcessRedundancy(
@@ -5121,13 +5190,32 @@ public class BlockManager implements BlockStatsMXBean {
 
   BlockPlacementStatus getBlockPlacementStatus(BlockInfo storedBlock,
       DatanodeStorageInfo[] additionalStorage) {
+    final boolean striped = storedBlock.isStriped();
+    final BlockInfoStriped stripedBlock =
+        striped ? (BlockInfoStriped) storedBlock : null;
+    final BlockPlacementPolicy placementPolicy = placementPolicies
+        .getPolicy(storedBlock.getBlockType());
+    // Only the erasure-coding-aware policy can make use of the per-location
+    // internal-block indices; every other policy is verified by internal-block
+    // count as before.
+    final boolean ecAware =
+        striped && placementPolicy instanceof BlockPlacementPolicyErasureCoding;
     List<DatanodeDescriptor> liveNodes = new ArrayList<>();
+    // For the EC-aware policy, the internal-block index each location holds,
+    // kept in step with liveNodes so it can reason about per-domain loss.
+    List<Byte> liveIndices = ecAware ? new ArrayList<>() : null;
     if (additionalStorage != null) {
       // additionalNodes, are potential new targets for the block. If there are
       // any passed, include them when checking the placement policy to see if
       // the policy is met, when it may not have been met without these nodes.
       for (DatanodeStorageInfo s : additionalStorage) {
         liveNodes.add(getDatanodeDescriptorFromStorage(s));
+        if (ecAware) {
+          // A proposed new target's internal-block index is not yet fixed; mark
+          // it so the EC policy treats it as an extra copy that can relieve an
+          // over-concentrated failure domain.
+          liveIndices.add((byte) -1);
+        }
       }
     }
     Collection<DatanodeDescriptor> corruptNodes = corruptReplicas
@@ -5160,14 +5248,24 @@ public class BlockManager implements BlockStatsMXBean {
       if (!cur.isDecommissionInProgress() && !cur.isDecommissioned()
           && ((corruptNodes == null) || !corruptNodes.contains(cur))) {
         liveNodes.add(cur);
+        if (ecAware) {
+          liveIndices.add((byte) stripedBlock.getStorageBlockIndex(storage));
+        }
       }
     }
     DatanodeInfo[] locs = liveNodes.toArray(new DatanodeInfo[liveNodes.size()]);
-    BlockType blockType = storedBlock.getBlockType();
-    BlockPlacementPolicy placementPolicy = placementPolicies
-        .getPolicy(blockType);
-    int numReplicas = blockType == STRIPED ? ((BlockInfoStriped) storedBlock)
-        .getRealTotalBlockNum() : storedBlock.getReplication();
+    if (ecAware) {
+      byte[] indices = new byte[liveIndices.size()];
+      for (int i = 0; i < indices.length; i++) {
+        indices[i] = liveIndices.get(i);
+      }
+      return ((BlockPlacementPolicyErasureCoding) placementPolicy)
+          .verifyBlockPlacement(locs, indices,
+              stripedBlock.getRealTotalBlockNum(),
+              stripedBlock.getParityBlockNum());
+    }
+    int numReplicas = striped ? stripedBlock.getRealTotalBlockNum()
+        : storedBlock.getReplication();
     return placementPolicy.verifyBlockPlacement(locs, numReplicas);
   }
 

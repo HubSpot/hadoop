@@ -4347,10 +4347,24 @@
 
 <property>
   <name>dfs.block.placement.ec.classname</name>
-  <value>org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyRackFaultTolerant</value>
+  <value>org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyErasureCoding</value>
   <description>
-    Placement policy class for striped files.
-    Defaults to BlockPlacementPolicyRackFaultTolerant.class
+    Placement policy class for striped (erasure-coded) files.
+    Defaults to BlockPlacementPolicyErasureCoding.class.
+
+    BlockPlacementPolicyErasureCoding is aware of the data/parity structure of
+    erasure-coded block groups. For a scheme that can lose up to N internal
+    blocks it guarantees that no single failure domain (rack) holds more than N
+    internal blocks that exist nowhere else, so the group survives the loss of
+    any one domain. When there are too few domains to achieve this with one copy
+    of each internal block, it reports that extra copies are required and the
+    redundancy monitor duplicates at-risk internal blocks into other domains,
+    preferring over-replication to under-replication.
+
+    This is the recommended policy. The older
+    BlockPlacementPolicyRackFaultTolerant only counts distinct racks and can
+    report an unsafe group (one rack holding more than N internal blocks) as
+    satisfied, so it is not recommended for erasure-coded data.
   </description>
 </property>
 

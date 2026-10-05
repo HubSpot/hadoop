@@ -804,6 +804,114 @@ public class TestBlockManager {
             numReplicas.redundantInternalBlocks());
   }
 
+  /**
+   * Build an erasure-coded (RS-3-2) group that is simultaneously unsafe (one
+   * failure domain holds more than the parity count of sole-copy internal
+   * blocks) and over-replicated with a redundant internal block that protects no
+   * domain. rackA = nodes 0,1,2 hold the sole copies of indices 0,1,2 (3 > the
+   * budget of 2). rackB = nodes 3,4,5 hold indices 3, 4, and a SECOND copy of
+   * index 3 on the same rack, which occupies the only spare node.
+   */
+  private BlockInfoStriped addUnsafeOverReplicatedEcGroup() {
+    addNodes(nodes);
+    // Use each datanode's registered storage (heartbeat processing may replace
+    // the standalone storage objects), so the block lands on the storage list
+    // that excess processing actually iterates.
+    DatanodeStorageInfo[] ds = new DatanodeStorageInfo[6];
+    for (int i = 0; i < 6; i++) {
+      ds[i] = nodes.get(i).getStorageInfos()[0];
+      ds[i].setBlockContentsStale(false);
+    }
+
+    // RS-3-2: 3 data + 2 parity, so at most 2 internal blocks may be lost.
+    ErasureCodingPolicy ecPolicy =
+        SystemErasureCodingPolicies.getPolicies().get(1);
+    long blockId = -9223372036854775776L; // real ec block id
+    Block aBlock =
+        new Block(blockId, ecPolicy.getCellSize() * ecPolicy.getNumDataUnits(), 0);
+    BlockInfoStriped sblk = new BlockInfoStriped(aBlock, ecPolicy);
+
+    // Use addBlock so the block is linked into each storage's block list (what
+    // excess processing iterates), not just the block's triplets.
+    ds[0].addBlock(sblk, new Block(blockId, 0, 0));
+    ds[1].addBlock(sblk, new Block(blockId + 1, 0, 0));
+    ds[2].addBlock(sblk, new Block(blockId + 2, 0, 0));
+    ds[3].addBlock(sblk, new Block(blockId + 3, 0, 0));
+    ds[4].addBlock(sblk, new Block(blockId + 4, 0, 0));
+    ds[5].addBlock(sblk, new Block(blockId + 3, 0, 0));
+
+    // register the block group with a block collection (default storage policy)
+    long inodeId = ++mockINodeId;
+    final INodeFile bc = TestINodeFile.createINodeFile(inodeId);
+    bm.blocksMap.addBlockCollection(sblk, bc);
+    sblk.setBlockCollectionId(inodeId);
+    doReturn(bc).when(fsn).getBlockCollection(inodeId);
+    return sblk;
+  }
+
+  /**
+   * When a node is put in service, the excess-redundancy path must reclaim a
+   * redundant internal block that protects no domain even though the group is
+   * still unsafe for an unrelated reason. Regression test for the
+   * durability-aware excess-deletion gate.
+   */
+  @Test
+  public void testReclaimNonProtectiveDuplicateWhenEcGroupUnsafe()
+      throws Exception {
+    BlockInfoStriped sblk = addUnsafeOverReplicatedEcGroup();
+
+    // Precondition: over-replicated (one redundant internal block) and nothing
+    // marked excess yet.
+    assertEquals(1, bm.countNodes(sblk).redundantInternalBlocks());
+    assertEquals(0, bm.countNodes(sblk).excessReplicas());
+
+    // Drive the real excess-redundancy path from the node holding the duplicate.
+    bm.setInitializedReplQueues(true);
+    try {
+      bm.processExtraRedundancyBlocksOnInService(
+          nodes.get(5));
+    } finally {
+      bm.setInitializedReplQueues(false);
+    }
+
+    // The redundant same-rack copy must be reclaimed even though the group stays
+    // unsafe because of rackA. Before the fix the gate kept every duplicate
+    // while the group was unsafe, so nothing was reclaimed (deadlock).
+    assertEquals("The redundant internal block should be reclaimed even while "
+        + "the group is unsafe for an unrelated reason",
+        1, bm.countNodes(sblk).excessReplicas());
+  }
+
+  /**
+   * The mis-replication scan (e.g. on NameNode restart) must reclaim redundant
+   * internal blocks even when the group is also queued for reconstruction. An
+   * EC group can be both mis-placed (needs reconstruction) and over-replicated;
+   * the scan must not stop at queueing reconstruction, or the duplicates
+   * occupying capacity are never reclaimed and the group can never heal.
+   */
+  @Test
+  public void testMisReplicationScanReclaimsDuplicateOnUnsafeEcGroup()
+      throws Exception {
+    BlockInfoStriped sblk = addUnsafeOverReplicatedEcGroup();
+
+    // The group is BOTH over-replicated and in need of reconstruction (it is
+    // unsafely placed), which is exactly the case that used to skip excess.
+    assertEquals(1, bm.countNodes(sblk).redundantInternalBlocks());
+    assertTrue(bm.isNeededReconstruction(sblk, bm.countNodes(sblk)));
+    assertEquals(0, bm.countNodes(sblk).excessReplicas());
+
+    bm.setInitializedReplQueues(true);
+    try {
+      bm.processMisReplicatedBlock(sblk);
+    } finally {
+      bm.setInitializedReplQueues(false);
+    }
+
+    assertEquals("The mis-replication scan must reclaim the redundant internal "
+        + "block even while the group is queued for reconstruction",
+        1, bm.countNodes(sblk).excessReplicas());
+  }
+
   @Test
   public void testChooseSrcDNWithDupECInDecommissioningNode() throws Exception {
     long blockId = -9223372036854775776L; // real ec block id
