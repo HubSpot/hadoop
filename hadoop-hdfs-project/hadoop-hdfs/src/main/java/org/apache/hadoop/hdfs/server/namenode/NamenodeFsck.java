@@ -65,6 +65,7 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
 import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataEncryptionKeyFactory;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
@@ -816,9 +817,20 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
       }
 
       // count mis replicated blocks
-      BlockPlacementStatus blockPlacementStatus = bpPolicies.getPolicy(
-          lBlk.getBlockType()).verifyBlockPlacement(lBlk.getLocations(),
-          targetFileReplication);
+      final BlockPlacementStatus blockPlacementStatus;
+      if (storedBlock.isStriped()) {
+        // Give the EC policy the internal-block index each location holds so it
+        // can check per-failure-domain durability rather than only rack count.
+        BlockInfoStriped stripedBlock = (BlockInfoStriped) storedBlock;
+        blockPlacementStatus = bpPolicies.getErasureCodingPolicy()
+            .verifyBlockPlacement(lBlk.getLocations(),
+                ((LocatedStripedBlock) lBlk).getBlockIndices(),
+                stripedBlock.getRealTotalBlockNum(),
+                stripedBlock.getParityBlockNum());
+      } else {
+        blockPlacementStatus = bpPolicies.getPolicy(lBlk.getBlockType())
+            .verifyBlockPlacement(lBlk.getLocations(), targetFileReplication);
+      }
       if (!blockPlacementStatus.isPlacementPolicySatisfied()) {
         res.numMisReplicatedBlocks++;
         misReplicatedPerFile++;

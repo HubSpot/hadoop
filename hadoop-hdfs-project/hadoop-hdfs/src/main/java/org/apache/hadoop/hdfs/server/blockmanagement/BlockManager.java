@@ -17,9 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CORRUPT_BLOCK_DELETE_IMMEDIATELY_ENABLED;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_CORRUPT_BLOCK_DELETE_IMMEDIATELY_ENABLED_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SEND_QOP_ENABLED;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SEND_QOP_ENABLED_DEFAULT;
 import static org.apache.hadoop.hdfs.protocol.BlockType.CONTIGUOUS;
 import static org.apache.hadoop.hdfs.protocol.BlockType.STRIPED;
+import static org.apache.hadoop.hdfs.util.StripedBlockUtil.getInternalBlockLength;
 import static org.apache.hadoop.util.ExitUtil.terminate;
 import static org.apache.hadoop.util.Time.now;
 
@@ -43,32 +47,31 @@ import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ConcurrentLinkedQueue;
-
 import java.util.concurrent.atomic.AtomicLong;
 import javax.management.ObjectName;
-
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.hdfs.DFSUtilClient;
-import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
+import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HAUtil;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs.BlockReportReplica;
+import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.StoragePolicySatisfierMode;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
@@ -76,8 +79,8 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.protocol.UnregisteredNodeException;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
-import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier.AccessMode;
+import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
 import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
 import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped.StorageAndBlockIndex;
@@ -88,6 +91,7 @@ import org.apache.hadoop.hdfs.server.blockmanagement.PendingDataNodeMessages.Rep
 import org.apache.hadoop.hdfs.server.blockmanagement.PendingReconstructionBlocks.PendingBlockInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
+import org.apache.hadoop.hdfs.server.namenode.CacheManager;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
 import org.apache.hadoop.hdfs.server.namenode.INodesInPath;
@@ -110,24 +114,19 @@ import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
-import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
-import org.apache.hadoop.hdfs.server.namenode.CacheManager;
-
-import static org.apache.hadoop.hdfs.util.StripedBlockUtil.getInternalBlockLength;
-
+import org.apache.hadoop.hdfs.util.LightWeightLinkedSet;
 import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.Node;
+import org.apache.hadoop.net.NodeBase;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.LightWeightGSet;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
-
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -360,6 +359,20 @@ public class BlockManager implements BlockStatsMXBean {
       new LinkedHashSet<Block>();
   private final int blocksPerPostpondedRescan;
   private final ArrayList<Block> rescannedMisreplicatedBlocks;
+
+  /**
+   * Erasure-coded block groups that are safely placed but over-replicated in a
+   * way that moving one internal block would reduce (see
+   * {@link BlockPlacementPolicyErasureCoding#planConsolidation}). The
+   * redundancy monitor serves this queue only with capacity left over from
+   * reconstruction. Guarded by the namesystem lock.
+   */
+  private final LightWeightLinkedSet<BlockInfo> ecConsolidationQueue =
+      new LightWeightLinkedSet<>();
+  /** Failure domains with in-service datanodes, refreshed periodically. */
+  private Set<String> inServiceDomains = null;
+  private long inServiceDomainsRefreshedMs;
+  private static final long IN_SERVICE_DOMAINS_REFRESH_MS = 30_000L;
 
   /**
    * Maps a StorageID to the set of blocks that are "extra" for this
@@ -782,8 +795,8 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   @VisibleForTesting
-  public BlockPlacementPolicy getStriptedBlockPlacementPolicy() {
-    return placementPolicies.getPolicy(STRIPED);
+  public BlockPlacementPolicyErasureCoding getStriptedBlockPlacementPolicy() {
+    return placementPolicies.getErasureCodingPolicy();
   }
 
   public void refreshBlockPlacementPolicy(Configuration conf) {
@@ -807,6 +820,8 @@ public class BlockManager implements BlockStatsMXBean {
     // Need to iterate over all queues from neededReplications
     // except for the QUEUE_WITH_CORRUPT_BLOCKS)
     //
+    out.println("Metasave: EC block groups queued for consolidation: "
+        + ecConsolidationQueue.size());
     synchronized (neededReconstruction) {
       out.println("Metasave: Blocks waiting for reconstruction: "
           + neededReconstruction.getLowRedundancyBlockCount());
@@ -2036,6 +2051,7 @@ public class BlockManager implements BlockStatsMXBean {
    */
   int computeBlockReconstructionWork(int blocksToProcess) {
     List<List<BlockInfo>> blocksToReconstruct = null;
+    List<BlockInfo> consolidations = Collections.emptyList();
     namesystem.writeLock();
     try {
       boolean reset = false;
@@ -2050,10 +2066,19 @@ public class BlockManager implements BlockStatsMXBean {
         // Choose the blocks to be reconstructed
       blocksToReconstruct = neededReconstruction
           .chooseLowRedundancyBlocks(blocksToProcess, reset);
+      // Consolidating over-replicated EC groups only uses what is left.
+      int chosen = 0;
+      for (List<BlockInfo> blocks : blocksToReconstruct) {
+        chosen += blocks.size();
+      }
+      if (chosen < blocksToProcess && !ecConsolidationQueue.isEmpty()) {
+        consolidations = ecConsolidationQueue.pollN(blocksToProcess - chosen);
+      }
     } finally {
       namesystem.writeUnlock();
     }
-    return computeReconstructionWorkForBlocks(blocksToReconstruct);
+    return computeReconstructionWorkForBlocks(blocksToReconstruct,
+        consolidations);
   }
 
   /**
@@ -2066,6 +2091,19 @@ public class BlockManager implements BlockStatsMXBean {
   @VisibleForTesting
   int computeReconstructionWorkForBlocks(
       List<List<BlockInfo>> blocksToReconstruct) {
+    return computeReconstructionWorkForBlocks(blocksToReconstruct,
+        Collections.emptyList());
+  }
+
+  /**
+   * {@link #computeReconstructionWorkForBlocks(List)}, also scheduling a copy
+   * for each of {@code consolidations}, erasure-coded block groups taken from
+   * the consolidation queue.
+   */
+  @VisibleForTesting
+  int computeReconstructionWorkForBlocks(
+      List<List<BlockInfo>> blocksToReconstruct,
+      List<BlockInfo> consolidations) {
     int scheduledWork = 0;
     List<BlockReconstructionWork> reconWork = new ArrayList<>();
 
@@ -2082,6 +2120,12 @@ public class BlockManager implements BlockStatsMXBean {
               reconWork.add(rw);
             }
           }
+        }
+      }
+      for (BlockInfo block : consolidations) {
+        BlockReconstructionWork rw = scheduleEcConsolidation(block);
+        if (rw != null) {
+          reconWork.add(rw);
         }
       }
     } finally {
@@ -2116,6 +2160,10 @@ public class BlockManager implements BlockStatsMXBean {
         final DatanodeStorageInfo[] targets = rw.getTargets();
         if (targets == null || targets.length == 0) {
           rw.resetTargets();
+          if (rw instanceof EcConsolidationWork && !rw.getBlock().isDeleted()) {
+            // No target could be chosen this time; try again later.
+            ecConsolidationQueue.add(rw.getBlock());
+          }
           continue;
         }
 
@@ -2252,9 +2300,14 @@ public class BlockManager implements BlockStatsMXBean {
       for (int i = 0; i < excludeReconstructed.size(); i++) {
         excludeReconstructedIndices[i] = excludeReconstructed.get(i);
       }
-      return new ErasureCodingWork(getBlockPoolId(), block, bc, newSrcNodes,
-          containingNodes, liveReplicaNodes, additionalReplRequired,
-          priority, newIndices, busyIndices, excludeReconstructedIndices);
+      final ErasureCodingWork ecWork = new ErasureCodingWork(getBlockPoolId(),
+          block, bc, newSrcNodes, containingNodes, liveReplicaNodes,
+          additionalReplRequired, priority, newIndices, busyIndices,
+          excludeReconstructedIndices);
+      if (numReplicas.liveReplicas() >= requiredRedundancy) {
+        ecWork.setPlacementOnly();
+      }
+      return ecWork;
     } else {
       return new ReplicationWork(block, bc, srcNodes,
           containingNodes, liveReplicaNodes, additionalReplRequired,
@@ -2288,7 +2341,11 @@ public class BlockManager implements BlockStatsMXBean {
     }
   }
 
-  private boolean validateReconstructionWork(BlockReconstructionWork rw) {
+  @VisibleForTesting
+  boolean validateReconstructionWork(BlockReconstructionWork rw) {
+    if (rw instanceof EcConsolidationWork) {
+      return validateEcConsolidation((EcConsolidationWork) rw);
+    }
     BlockInfo block = rw.getBlock();
     int priority = rw.getPriority();
     // Recheck since global lock was released
@@ -2332,6 +2389,13 @@ public class BlockManager implements BlockStatsMXBean {
 
     // Add block to the datanode's task list
     rw.addTaskToDatanode(numReplicas);
+    // The task may use only some of the chosen targets; only those are
+    // scheduled and awaited.
+    targets = rw.getTargets();
+    if (targets == null || targets.length == 0) {
+      rw.resetTargets();
+      return false;
+    }
     DatanodeStorageInfo.incrementBlocksScheduled(targets);
 
     // Move the block-replication into a "pending" state.
@@ -3733,6 +3797,7 @@ public class BlockManager implements BlockStatsMXBean {
     assert namesystem.hasWriteLock();
     stopReconstructionInitializer();
     neededReconstruction.clear();
+    ecConsolidationQueue.clear();
     reconstructionQueuesInitializer = new Daemon() {
 
       @Override
@@ -3918,7 +3983,8 @@ public class BlockManager implements BlockStatsMXBean {
    * appropriate queues if necessary, and returns a result code indicating
    * what happened with it.
    */
-  private MisReplicationResult processMisReplicatedBlock(BlockInfo block) {
+  @VisibleForTesting
+  MisReplicationResult processMisReplicatedBlock(BlockInfo block) {
     if (block.isDeleted()) {
       // block does not belong to any file
       addToInvalidates(block);
@@ -3934,14 +4000,20 @@ public class BlockManager implements BlockStatsMXBean {
     NumberReplicas num = countNodes(block);
     final int numCurrentReplica = num.liveReplicas();
     // add to low redundancy queue if need to be
+    boolean addedToNeededReconstruction = false;
     if (isNeededReconstruction(block, num)) {
-      if (neededReconstruction.add(block, numCurrentReplica,
-          num.readOnlyReplicas(), num.outOfServiceReplicas(),
-          expectedRedundancy)) {
-        return MisReplicationResult.UNDER_REPLICATED;
-      }
+      addedToNeededReconstruction = neededReconstruction.add(block,
+          numCurrentReplica, num.readOnlyReplicas(),
+          num.outOfServiceReplicas(), expectedRedundancy);
     }
 
+    // A block can simultaneously need reconstruction for placement and have
+    // redundant internal blocks to reclaim. This is possible for erasure-coded
+    // groups: a group over-concentrated on one failure domain is queued for
+    // reconstruction while also holding duplicate internal blocks that occupy
+    // capacity. Process any excess redundancy even when the block was just
+    // queued for reconstruction, so those duplicates are reclaimed and the
+    // reconstruction has somewhere to place the relieving copy.
     if (shouldProcessExtraRedundancy(num, expectedRedundancy)) {
       if (num.replicasOnStaleNodes() > 0) {
         // If any of the replicas of this block are on nodes that are
@@ -3951,12 +4023,16 @@ public class BlockManager implements BlockStatsMXBean {
         // the "stale" nodes have block reported.
         return MisReplicationResult.POSTPONE;
       }
-      
+
       // extra redundancy block
       processExtraRedundancyBlock(block, expectedRedundancy, null, null);
       return MisReplicationResult.OVER_REPLICATED;
     }
-    
+
+    if (addedToNeededReconstruction) {
+      return MisReplicationResult.UNDER_REPLICATED;
+    }
+
     return MisReplicationResult.OK;
   }
   
@@ -4068,13 +4144,11 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   /**
-   * We want block group has every internal block, but we have redundant
-   * internal blocks (which have the same index).
-   * In this method, we delete the redundant internal blocks until only one
-   * left for each index.
-   *
-   * The block placement policy will make sure that the left internal blocks are
-   * spread across racks and also try hard to pick one with least free space.
+   * The block group has redundant internal blocks (several copies of the same
+   * index). Reclaim every redundant copy that does not protect the group's
+   * placement under {@link BlockPlacementPolicyErasureCoding}; copies that keep
+   * a failure domain within its loss budget, or keep the group spread across
+   * domains, are kept as intentional over-replication.
    */
   private void chooseExcessRedundancyStriped(BlockCollection bc,
       final Collection<DatanodeStorageInfo> nonExcess,
@@ -4098,12 +4172,23 @@ public class BlockManager implements BlockStatsMXBean {
       storage2index.put(storage, index);
     }
 
-    // use delNodeHint only if delNodeHint is duplicated
+    // BlockPlacementPolicyErasureCoding keeps extra copies of an internal block
+    // on purpose to keep every failure domain within its loss budget. Such a
+    // copy may only be reclaimed when removing it does not make the group less
+    // safe; redundant copies that protect no domain are still reclaimed so their
+    // capacity can be reused to fix a genuinely over-concentrated domain.
+    final BlockPlacementPolicyErasureCoding placementPolicy =
+        placementPolicies.getErasureCodingPolicy();
+
+    // use delNodeHint only if delNodeHint is duplicated and that copy is not
+    // protecting the group
     final DatanodeStorageInfo delStorageHint =
         DatanodeStorageInfo.getDatanodeStorageInfo(nonExcess, delNodeHint.getDatanode());
     if (delStorageHint != null) {
       Integer index = storage2index.get(delStorageHint);
-      if (index != null && duplicated.get(index)) {
+      if (index != null && duplicated.get(index)
+          && !removalWouldReduceSafety(sblk, nonExcess, delStorageHint,
+              placementPolicy)) {
         processChosenExcessRedundancy(nonExcess, delStorageHint, delNodeHint.getGracePeriod(), storedBlock);
       }
     }
@@ -4120,7 +4205,6 @@ public class BlockManager implements BlockStatsMXBean {
       return;
     }
 
-    BlockPlacementPolicy placementPolicy = placementPolicies.getPolicy(STRIPED);
     // for each duplicated index, delete some replicas until only one left
     for (int targetIndex = duplicated.nextSetBit(0); targetIndex >= 0;
          targetIndex = duplicated.nextSetBit(targetIndex + 1)) {
@@ -4131,25 +4215,346 @@ public class BlockManager implements BlockStatsMXBean {
           candidates.add(storage);
         }
       }
-      if (candidates.size() > 1) {
-        List<DatanodeStorageInfo> replicasToDelete = placementPolicy
-            .chooseReplicasToDelete(nonExcess, candidates, (short) 1,
-                excessTypes, null, null);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Choose redundant EC replicas to delete from blk_{} which is located in {}",
-              sblk.getBlockId(), storage2index);
-          LOG.debug("Storages with candidate blocks to be deleted: {}", candidates);
-          LOG.debug("Storages with blocks to be deleted: {}", replicasToDelete);
-        }
-        Preconditions.checkArgument(candidates.containsAll(replicasToDelete),
-            "The EC replicas to be deleted are not in the candidate list");
-        for (DatanodeStorageInfo chosen : replicasToDelete) {
-          processChosenExcessRedundancy(nonExcess, chosen, delNodeHint.getGracePeriod(), storedBlock);
-          candidates.remove(chosen);
-        }
-      }
+      chooseExcessRedundancyStripedIndex(sblk, nonExcess, candidates,
+          excessTypes, placementPolicy, delNodeHint.getGracePeriod());
       duplicated.clear(targetIndex);
     }
+
+    // What remains is protective; moving an internal block may still reduce it.
+    if (planEcConsolidation(sblk) != null) {
+      ecConsolidationQueue.add(sblk);
+    }
+  }
+
+  /**
+   * Plan a copy that reduces the over-replication of {@code sblk}, or null if
+   * there is none or the group is not in a settled state to plan one: every
+   * replica must be on an in-service, live, healthy storage (or already marked
+   * excess), all of the same storage type, with no reconstruction queued or
+   * pending.
+   */
+  private BlockPlacementPolicyErasureCoding.Consolidation planEcConsolidation(
+      BlockInfoStriped sblk) {
+    if (sblk.isDeleted() || !sblk.isComplete()
+        || pendingReconstruction.getNumReplicas(sblk) > 0
+        || neededReconstruction.contains(sblk)) {
+      return null;
+    }
+    final Collection<DatanodeDescriptor> corruptNodes =
+        corruptReplicas.getNodes(sblk);
+    final List<String> domains = new ArrayList<>();
+    final List<Byte> indices = new ArrayList<>();
+    StorageType storageType = null;
+    for (DatanodeStorageInfo storage : blocksMap.getStorages(sblk)) {
+      final DatanodeDescriptor node = storage.getDatanodeDescriptor();
+      if (isExcess(node, sblk)) {
+        continue;
+      }
+      if (!node.isInService() || !node.isAlive()
+          || storage.getState() != State.NORMAL
+          || storage.areBlockContentsStale()
+          || (corruptNodes != null && corruptNodes.contains(node))) {
+        return null;
+      }
+      if (storageType == null) {
+        storageType = storage.getStorageType();
+      } else if (storageType != storage.getStorageType()) {
+        return null;
+      }
+      domains.add(node.getNetworkLocation());
+      indices.add((byte) sblk.getStorageBlockIndex(storage));
+    }
+    final byte[] indexArray = new byte[indices.size()];
+    for (int i = 0; i < indexArray.length; i++) {
+      indexArray[i] = indices.get(i);
+    }
+    return placementPolicies.getErasureCodingPolicy().planConsolidation(
+        domains.toArray(new String[0]), indexArray, inServiceDomains(),
+        sblk.getRealTotalBlockNum(), sblk.getParityBlockNum());
+  }
+
+  @VisibleForTesting
+  boolean isQueuedForEcConsolidation(BlockInfo block) {
+    return ecConsolidationQueue.contains(block);
+  }
+
+  private Set<String> inServiceDomains() {
+    final long now = Time.monotonicNow();
+    if (inServiceDomains == null
+        || now - inServiceDomainsRefreshedMs >= IN_SERVICE_DOMAINS_REFRESH_MS) {
+      Set<String> domains = new HashSet<>();
+      for (Node leaf : datanodeManager.getNetworkTopology()
+          .getLeaves(NodeBase.ROOT)) {
+        if (leaf instanceof DatanodeDescriptor
+            && ((DatanodeDescriptor) leaf).isInService()
+            && ((DatanodeDescriptor) leaf).isAlive()) {
+          domains.add(leaf.getNetworkLocation());
+        }
+      }
+      inServiceDomains = domains;
+      inServiceDomainsRefreshedMs = now;
+    }
+    return inServiceDomains;
+  }
+
+  /**
+   * Turn a group taken from the consolidation queue into a copy task, if it
+   * still has a consolidation and a source that is not already busy. A group
+   * whose sources are all busy is queued again for later.
+   */
+  private EcConsolidationWork scheduleEcConsolidation(BlockInfo block) {
+    if (!block.isStriped()) {
+      return null;
+    }
+    final BlockInfoStriped sblk = (BlockInfoStriped) block;
+    final BlockPlacementPolicyErasureCoding.Consolidation plan =
+        planEcConsolidation(sblk);
+    if (plan == null) {
+      return null;
+    }
+    final List<DatanodeDescriptor> containingNodes = new ArrayList<>();
+    final List<DatanodeStorageInfo> liveStorages = new ArrayList<>();
+    DatanodeDescriptor source = null;
+    for (DatanodeStorageInfo storage : blocksMap.getStorages(sblk)) {
+      final DatanodeDescriptor node = storage.getDatanodeDescriptor();
+      containingNodes.add(node);
+      if (isExcess(node, sblk)) {
+        continue;
+      }
+      liveStorages.add(storage);
+      if (source == null
+          && sblk.getStorageBlockIndex(storage) == plan.getIndex()
+          && node.getNumberOfBlocksToBeReplicated()
+              + node.getNumberOfBlocksToBeErasureCoded()
+              < maxReplicationStreams) {
+        source = node;
+      }
+    }
+    if (source == null
+        || !hasNodeOutside(plan.getDomain(), containingNodes)) {
+      // Busy sources or a domain with no free node yet: try again later.
+      ecConsolidationQueue.add(sblk);
+      return null;
+    }
+    return new EcConsolidationWork(sblk, getBlockCollection(sblk), source,
+        containingNodes, liveStorages, plan.getIndex(), plan.getDomain());
+  }
+
+  /**
+   * Whether {@code domain} has an in-service, live datanode that is not one of
+   * {@code containingNodes}.
+   */
+  private boolean hasNodeOutside(String domain,
+      Collection<DatanodeDescriptor> containingNodes) {
+    for (Node node : datanodeManager.getNetworkTopology()
+        .getDatanodesInRack(domain)) {
+      if (!(node instanceof DatanodeDescriptor)) {
+        // A deeper topology (e.g. node groups); let target choice decide.
+        return true;
+      }
+      if (node instanceof DatanodeDescriptor
+          && ((DatanodeDescriptor) node).isInService()
+          && ((DatanodeDescriptor) node).isAlive()
+          && !containingNodes.contains(node)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Schedule a consolidation copy once its target is chosen, after checking
+   * under the lock that the group still calls for the same copy.
+   */
+  private boolean validateEcConsolidation(EcConsolidationWork work) {
+    final BlockInfo block = work.getBlock();
+    final DatanodeStorageInfo[] targets = work.getTargets();
+    final BlockPlacementPolicyErasureCoding.Consolidation plan =
+        block.isStriped() ? planEcConsolidation((BlockInfoStriped) block)
+            : null;
+    if (plan == null || plan.getIndex() != work.getIndex()
+        || !plan.getDomain().equals(work.getDomain())
+        || targets == null || targets.length != 1
+        || !work.getDomain().equals(
+            targets[0].getDatanodeDescriptor().getNetworkLocation())
+        || containsNode(block, targets[0].getDatanodeDescriptor())) {
+      work.resetTargets();
+      return false;
+    }
+    work.addTaskToDatanode(null);
+    DatanodeStorageInfo.incrementBlocksScheduled(targets);
+    pendingReconstruction.increment(block, targets);
+    blockLog.debug("BLOCK* {}: {} via {}", block, plan,
+        targets[0].getDatanodeDescriptor());
+    return true;
+  }
+
+  private boolean containsNode(BlockInfo block, DatanodeDescriptor node) {
+    for (DatanodeStorageInfo storage : blocksMap.getStorages(block)) {
+      if (storage.getDatanodeDescriptor().equals(node)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Reclaim redundant copies of one internal block under {@link
+   * BlockPlacementPolicyErasureCoding}: the largest set of its copies whose
+   * removal leaves the group no less safe than it is now, preferring to keep
+   * the copies on the storages with the most free space. At least one copy is
+   * always kept.
+   * <p>
+   * Choosing the whole set at once, rather than one copy at a time, matters
+   * when a copy was added to move an internal block: of its three copies, the
+   * two old ones may only be removable together, leaving the new one.
+   * <p>
+   * Removing a copy can only make other copies more protective, never less,
+   * so one pass over the duplicated indices leaves no reclaimable copy behind.
+   */
+  private void chooseExcessRedundancyStripedIndex(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess,
+      List<DatanodeStorageInfo> candidates, List<StorageType> excessTypes,
+      BlockPlacementPolicyErasureCoding placementPolicy, long gracePeriodMs) {
+    if (candidates.size() < 2) {
+      return;
+    }
+    final List<DatanodeStorageInfo> live = new ArrayList<>(nonExcess);
+    final String[] domains = new String[live.size()];
+    final byte[] indices = new byte[live.size()];
+    for (int i = 0; i < live.size(); i++) {
+      domains[i] = live.get(i).getDatanodeDescriptor().getNetworkLocation();
+      indices[i] = (byte) sblk.getStorageBlockIndex(live.get(i));
+    }
+    final int[] copies = new int[candidates.size()];
+    final long[] keepPreference = new long[candidates.size()];
+    for (int c = 0; c < copies.length; c++) {
+      copies[c] = live.indexOf(candidates.get(c));
+      keepPreference[c] = candidates.get(c).getRemaining();
+    }
+    final int[] reclaim = placementPolicy.chooseCopiesToReclaim(domains,
+        indices, copies, keepPreference, sblk.getRealTotalBlockNum(),
+        sblk.getParityBlockNum());
+    if (reclaim == null) {
+      // Too many copies to search every combination.
+      chooseExcessRedundancyStripedIndexGreedily(sblk, nonExcess, candidates,
+          excessTypes, placementPolicy, gracePeriodMs);
+      return;
+    }
+    if (reclaim.length == 0) {
+      LOG.debug("Keeping {} copies of an internal block of {} on {}: each"
+          + " protects the group's placement", candidates.size(), sblk,
+          candidates);
+      return;
+    }
+    // Never drop the last copy of an internal block.
+    Preconditions.checkState(reclaim.length < candidates.size(),
+        "Refusing to delete the last copy of an internal block of %s", sblk);
+    LOG.debug("Reclaiming {} of the copies of an internal block of {} on {}",
+        reclaim.length, sblk, candidates);
+    for (int position : reclaim) {
+      final DatanodeStorageInfo chosen = live.get(position);
+      Preconditions.checkState(candidates.contains(chosen),
+          "EC replica %s to delete is not a copy of the internal block",
+          chosen);
+      // Any subset of a safe removal is safe, so skipping a copy whose
+      // storage type the storage policy wants kept is fine.
+      if (!excessTypes.remove(chosen.getStorageType())) {
+        continue;
+      }
+      processChosenExcessRedundancy(nonExcess, chosen, gracePeriodMs, sblk);
+      candidates.remove(chosen);
+    }
+  }
+
+  /**
+   * {@link #chooseExcessRedundancyStripedIndex} for an internal block with too
+   * many copies to search exhaustively: copies are removed one at a time, each
+   * only if removing it does not make the group less safe.
+   */
+  private void chooseExcessRedundancyStripedIndexGreedily(
+      BlockInfoStriped sblk, Collection<DatanodeStorageInfo> nonExcess,
+      List<DatanodeStorageInfo> candidates, List<StorageType> excessTypes,
+      BlockPlacementPolicyErasureCoding placementPolicy, long gracePeriodMs) {
+    while (candidates.size() > 1) {
+      List<DatanodeStorageInfo> reclaimable = new ArrayList<>();
+      for (DatanodeStorageInfo candidate : candidates) {
+        if (!removalWouldReduceSafety(sblk, nonExcess, candidate,
+            placementPolicy)) {
+          reclaimable.add(candidate);
+        }
+      }
+      if (reclaimable.isEmpty()) {
+        LOG.debug("Keeping {} copies of an internal block of {} on {}: each"
+            + " protects the group's placement", candidates.size(), sblk,
+            candidates);
+        return;
+      }
+      // Ask the policy to drop exactly one of the reclaimable copies.
+      List<DatanodeStorageInfo> chosen = placementPolicy.chooseReplicasToDelete(
+          nonExcess, reclaimable, reclaimable.size() - 1, excessTypes, null,
+          null);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Choose redundant EC replica of {} to delete among {}"
+            + " (reclaimable {}): {}", sblk, candidates, reclaimable, chosen);
+      }
+      if (chosen.isEmpty()) {
+        return;
+      }
+      Preconditions.checkState(chosen.size() == 1
+              && reclaimable.contains(chosen.get(0)),
+          "Expected one reclaimable EC replica to delete, got %s", chosen);
+      // Never drop the last copy of an internal block.
+      Preconditions.checkState(candidates.size() > 1,
+          "Refusing to delete the last copy of an internal block of %s", sblk);
+      processChosenExcessRedundancy(nonExcess, chosen.get(0), gracePeriodMs,
+          sblk);
+      candidates.remove(chosen.get(0));
+    }
+  }
+
+  /**
+   * Whether removing {@code excluded} from the group's live storages would make
+   * the erasure-coded placement less safe: the group would occupy fewer of the
+   * failure domains it should, or more internal blocks would be at risk of a
+   * single-domain loss. Only copies that actually protect the group are kept
+   * this way; a redundant copy that does not improve safety is still reclaimed
+   * so its capacity can be reused.
+   */
+  private boolean removalWouldReduceSafety(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
+      BlockPlacementPolicyErasureCoding placementPolicy) {
+    BlockPlacementStatusErasureCoding withCopy =
+        ecPlacementStatus(sblk, nonExcess, null, placementPolicy);
+    BlockPlacementStatusErasureCoding withoutCopy =
+        ecPlacementStatus(sblk, nonExcess, excluded, placementPolicy);
+    return withoutCopy.isLessSafeThan(withCopy);
+  }
+
+  /**
+   * The EC placement status of the group backed by {@code nonExcess},
+   * optionally ignoring the {@code excluded} storage.
+   */
+  private BlockPlacementStatusErasureCoding ecPlacementStatus(
+      BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
+      BlockPlacementPolicyErasureCoding placementPolicy) {
+    List<DatanodeInfo> locs = new ArrayList<>();
+    List<Byte> indices = new ArrayList<>();
+    for (DatanodeStorageInfo storage : nonExcess) {
+      if (storage.equals(excluded)) {
+        continue;
+      }
+      locs.add(storage.getDatanodeDescriptor());
+      indices.add((byte) sblk.getStorageBlockIndex(storage));
+    }
+    byte[] blockIndices = new byte[indices.size()];
+    for (int i = 0; i < blockIndices.length; i++) {
+      blockIndices[i] = indices.get(i);
+    }
+    return placementPolicy.verifyBlockPlacement(
+        locs.toArray(new DatanodeInfo[0]), blockIndices,
+        sblk.getRealTotalBlockNum(), sblk.getParityBlockNum());
   }
 
   private void processChosenExcessRedundancy(
@@ -4845,13 +5250,25 @@ public class BlockManager implements BlockStatsMXBean {
 
   BlockPlacementStatus getBlockPlacementStatus(BlockInfo storedBlock,
       DatanodeStorageInfo[] additionalStorage) {
+    final boolean striped = storedBlock.isStriped();
+    final BlockInfoStriped stripedBlock =
+        striped ? (BlockInfoStriped) storedBlock : null;
     List<DatanodeDescriptor> liveNodes = new ArrayList<>();
+    // For a striped block, the internal-block index each location holds, kept
+    // in step with liveNodes so the EC policy can reason about per-domain loss.
+    List<Byte> liveIndices = striped ? new ArrayList<>() : null;
     if (additionalStorage != null) {
       // additionalNodes, are potential new targets for the block. If there are
       // any passed, include them when checking the placement policy to see if
       // the policy is met, when it may not have been met without these nodes.
       for (DatanodeStorageInfo s : additionalStorage) {
         liveNodes.add(getDatanodeDescriptorFromStorage(s));
+        if (striped) {
+          // A proposed new target's internal-block index is not yet fixed; mark
+          // it so the EC policy treats it as an extra copy that can relieve an
+          // over-concentrated failure domain.
+          liveIndices.add((byte) -1);
+        }
       }
     }
     Collection<DatanodeDescriptor> corruptNodes = corruptReplicas
@@ -4884,15 +5301,23 @@ public class BlockManager implements BlockStatsMXBean {
       if (!cur.isDecommissionInProgress() && !cur.isDecommissioned()
           && ((corruptNodes == null) || !corruptNodes.contains(cur))) {
         liveNodes.add(cur);
+        if (striped) {
+          liveIndices.add((byte) stripedBlock.getStorageBlockIndex(storage));
+        }
       }
     }
     DatanodeInfo[] locs = liveNodes.toArray(new DatanodeInfo[liveNodes.size()]);
-    BlockType blockType = storedBlock.getBlockType();
-    BlockPlacementPolicy placementPolicy = placementPolicies
-        .getPolicy(blockType);
-    int numReplicas = blockType == STRIPED ? ((BlockInfoStriped) storedBlock)
-        .getRealTotalBlockNum() : storedBlock.getReplication();
-    return placementPolicy.verifyBlockPlacement(locs, numReplicas);
+    if (striped) {
+      byte[] indices = new byte[liveIndices.size()];
+      for (int i = 0; i < indices.length; i++) {
+        indices[i] = liveIndices.get(i);
+      }
+      return placementPolicies.getErasureCodingPolicy().verifyBlockPlacement(
+          locs, indices, stripedBlock.getRealTotalBlockNum(),
+          stripedBlock.getParityBlockNum());
+    }
+    return placementPolicies.getPolicy(CONTIGUOUS)
+        .verifyBlockPlacement(locs, storedBlock.getReplication());
   }
 
   boolean isNeededReconstructionForMaintenance(BlockInfo storedBlock,
@@ -5183,6 +5608,7 @@ public class BlockManager implements BlockStatsMXBean {
    */
   public void clearQueues() {
     neededReconstruction.clear();
+    ecConsolidationQueue.clear();
     pendingReconstruction.clear();
     excessRedundancyMap.clear();
     invalidateBlocks.clear();
