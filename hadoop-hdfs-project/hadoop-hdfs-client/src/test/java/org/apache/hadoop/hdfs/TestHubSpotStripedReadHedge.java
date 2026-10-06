@@ -21,6 +21,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,7 @@ import org.apache.hadoop.hdfs.DFSHedgedReadMetrics;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.AlignedStripe;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.BlockReadStats;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.StripingChunk;
+import org.apache.hadoop.util.Time;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -145,6 +147,42 @@ public class TestHubSpotStripedReadHedge {
 
     List<Integer> retire() {
       return hedge.retireHedgedStragglers(futures, stripe);
+    }
+
+    List<Integer> stop() {
+      return hedge.stopOutstandingReads(futures);
+    }
+
+    /** Simulate this chunk reading through a short-circuit reader. */
+    void readsLocally(int index, boolean local) {
+      hedge.readModeOf(index).set(local
+          ? HubSpotStripedReadHedge.READ_LOCAL
+          : HubSpotStripedReadHedge.READ_REMOTE);
+    }
+
+    /**
+     * Mirror the stripe after the hedged straggler finished first: its result
+     * has been taken off the map, and only the loser reads remain.
+     */
+    void hedgedChunkCompletes(int index) {
+      stripe.chunks[index].state = StripingChunk.FETCHED;
+      futures.remove(byIndex.get(index));
+    }
+
+    /** Simulate the read task for this chunk starting to run. */
+    void readTaskStarts(int index) {
+      assertTrue(hedge.runClaimOf(index).compareAndSet(false, true));
+    }
+
+    void readTaskExitsAfter(int index, long millis) {
+      new Thread(() -> {
+        try {
+          Thread.sleep(millis);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        readTaskExits(index);
+      }).start();
     }
   }
 
@@ -283,6 +321,7 @@ public class TestHubSpotStripedReadHedge {
   public void testPhaseTwoRetiresStragglerOnceItHasStopped() {
     Fixture f = new Fixture(hedge(THRESHOLD), 2);
     assertEquals(2, f.mark());
+    f.readTaskStarts(2);
 
     f.readTaskExits(2);
     List<Integer> retired = f.retire();
@@ -312,6 +351,7 @@ public class TestHubSpotStripedReadHedge {
   public void testStragglerThatWillNotStopIsNotRetired() {
     Fixture f = new Fixture(hedge(THRESHOLD), 2);
     assertEquals(2, f.mark());
+    f.readTaskStarts(2);
 
     // Deliberately do not call readTaskExits().
     List<Integer> retired = f.retire();
@@ -344,6 +384,8 @@ public class TestHubSpotStripedReadHedge {
 
     assertTrue(f.mark() >= 0);
     assertTrue(f.mark() >= 0);
+    f.readTaskStarts(2);
+    f.readTaskStarts(4);
 
     // Chunk 2's read stops; chunk 4's does not.
     f.readTaskExits(2);
@@ -363,6 +405,174 @@ public class TestHubSpotStripedReadHedge {
         f.hedge.isRetired(4));
     assertTrue("so the reader keeps waiting rather than breaking",
         f.hedge.hasOutstandingHedges(f.futures, f.stripe));
+  }
+
+  /** A stripe that never hedged leaves its futures as upstream would. */
+  @Test
+  public void testStopOutstandingReadsIsANoOpWithoutAHedge() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    assertTrue(f.stop().isEmpty());
+    assertFalse(f.byIndex.get(2).cancelled);
+    assertFalse(f.byIndex.get(6).cancelled);
+  }
+
+  /**
+   * The hedged straggler finished first, so the hedge's extra read lost and is
+   * still running. It must be interrupted and waited for, and reported so the
+   * caller discards its reader.
+   */
+  @Test(timeout = 10000)
+  public void testStopOutstandingReadsInterruptsAndWaitsForARemoteLoser() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    int hedgedIndex = f.mark();
+    int loser = hedgedIndex == 2 ? 6 : 2;
+    f.hedgedChunkCompletes(hedgedIndex);
+    f.readTaskStarts(loser);
+    f.readTaskExitsAfter(loser, 20);
+
+    assertEquals(Collections.singletonList(loser), f.stop());
+    assertTrue(f.byIndex.get(loser).cancelled);
+    assertTrue("a remote loser is interrupted so it stops promptly",
+        f.byIndex.get(loser).interruptRequested);
+  }
+
+  /** A loser that will not unwind in time is still waited for, never left. */
+  @Test(timeout = 10000)
+  public void testStopOutstandingReadsWaitsPastTheQuiesceTimeout() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    int hedgedIndex = f.mark();
+    int loser = hedgedIndex == 2 ? 6 : 2;
+    f.hedgedChunkCompletes(hedgedIndex);
+    f.readTaskStarts(loser);
+    // Well past the 50ms quiesce timeout set in conf().
+    f.readTaskExitsAfter(loser, 300);
+
+    long start = Time.monotonicNow();
+    assertEquals(Collections.singletonList(loser), f.stop());
+    assertTrue("must not return while the loser may still be running",
+        Time.monotonicNow() - start >= 250);
+  }
+
+  /**
+   * A loser submitted but not yet picked up by a worker never runs once
+   * cancelled, so its latch never fires. The canceller must win its claim
+   * instead of waiting forever, and the task must then refuse to run.
+   */
+  @Test(timeout = 10000)
+  public void testStopOutstandingReadsDoesNotWaitForAReadThatNeverStarted() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    int hedgedIndex = f.mark();
+    int loser = hedgedIndex == 2 ? 6 : 2;
+    f.hedgedChunkCompletes(hedgedIndex);
+
+    assertEquals(Collections.singletonList(loser), f.stop());
+    assertTrue(f.byIndex.get(loser).cancelled);
+    assertFalse("nothing is running, so there is nothing to interrupt",
+        f.byIndex.get(loser).interruptRequested);
+    assertFalse("the task must lose the claim and never touch its buffer",
+        f.hedge.runClaimOf(loser).compareAndSet(false, true));
+  }
+
+  /**
+   * Interrupting a short-circuit read closes the cached replica's FileChannel
+   * for every reader sharing it, so a short-circuit loser is cancelled without
+   * interruption and simply waited for.
+   */
+  @Test(timeout = 10000)
+  public void testStopOutstandingReadsNeverInterruptsAShortCircuitLoser() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    int hedgedIndex = f.mark();
+    final int loser = hedgedIndex == 2 ? 6 : 2;
+    f.hedgedChunkCompletes(hedgedIndex);
+    f.readTaskStarts(loser);
+    f.readTaskExitsAfter(loser, 200);
+
+    long start = Time.monotonicNow();
+    f.readsLocally(loser, true);
+    assertEquals(Collections.singletonList(loser), f.stop());
+    assertTrue(f.byIndex.get(loser).cancelled);
+    assertFalse("a short-circuit read must never be interrupted",
+        f.byIndex.get(loser).interruptRequested);
+    assertTrue("but it must still be waited for",
+        Time.monotonicNow() - start >= 150);
+  }
+
+  /** A retired straggler was already stopped and handled by phase 2. */
+  @Test
+  public void testStopOutstandingReadsSkipsRetiredStragglers() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2);
+    assertEquals(2, f.mark());
+    f.readTaskExits(2);
+    assertEquals(Collections.singletonList(2), f.retire());
+    assertTrue(f.stop().isEmpty());
+  }
+
+  /**
+   * A short-circuit straggler can never be retired, since it may not be
+   * interrupted, so hedging it would only cost extra reads.
+   */
+  @Test
+  public void testShortCircuitReadsAreNeitherHedgedNorRetired() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2);
+    f.readsLocally(2, true);
+    assertEquals("nothing hedgeable, so block instead of polling", 0,
+        f.poll());
+    assertEquals("a short-circuit straggler must not be hedged", -1,
+        f.mark());
+    assertEquals(0, lastMetrics.getHedgedReadOps());
+
+    f.readsLocally(2, false);
+    assertEquals(2, f.mark());
+    f.readTaskStarts(2);
+    // It reconnected through a short-circuit reader after being hedged.
+    assertTrue(HubSpotStripedReadHedge.switchToLocal(
+        f.hedge.readModeOf(2)));
+    f.readTaskExits(2);
+    assertTrue("so it must not be retired, which would interrupt it",
+        f.retire().isEmpty());
+    assertFalse(f.byIndex.get(2).cancelled);
+  }
+
+  /**
+   * A hedged straggler submitted but not yet picked up by a worker never runs
+   * once cancelled. Winning its claim proves that, so it is retired at once
+   * rather than waiting out the quiesce timeout for a latch that cannot fire.
+   */
+  @Test
+  public void testUnstartedStragglerIsRetiredWithoutWaiting() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2);
+    assertEquals(2, f.mark());
+
+    long start = Time.monotonicNow();
+    assertEquals(Collections.singletonList(2), f.retire());
+    assertTrue("must not wait out the 50ms quiesce timeout",
+        Time.monotonicNow() - start < 50);
+    assertFalse("nothing is running, so there is nothing to interrupt",
+        f.byIndex.get(2).interruptRequested);
+    assertTrue(f.hedge.isRetired(2));
+    assertEquals(1, lastMetrics.getHedgedReadWins());
+    assertFalse("the task must lose the claim and never run",
+        f.hedge.runClaimOf(2).compareAndSet(false, true));
+  }
+
+  /**
+   * Once a canceller has decided to interrupt a remote read, that read must not
+   * go on to reconnect through a short-circuit reader, whose channel the
+   * pending interrupt would close for every reader sharing the replica.
+   */
+  @Test(timeout = 10000)
+  public void testTaskCannotGoLocalOnceAnInterruptIsUnderway() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    int hedgedIndex = f.mark();
+    int loser = hedgedIndex == 2 ? 6 : 2;
+    f.hedgedChunkCompletes(hedgedIndex);
+    f.readTaskStarts(loser);
+    f.readTaskExits(loser);
+
+    assertEquals(Collections.singletonList(loser), f.stop());
+    assertTrue(f.byIndex.get(loser).interruptRequested);
+    assertFalse("a reconnect after this point must refuse the local reader",
+        HubSpotStripedReadHedge.switchToLocal(f.hedge.readModeOf(loser)));
   }
 
   // ---------------------------------------------------------------------
