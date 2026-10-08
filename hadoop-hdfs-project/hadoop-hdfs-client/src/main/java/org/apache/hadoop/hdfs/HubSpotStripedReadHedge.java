@@ -26,6 +26,8 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntFunction;
 
 import org.apache.hadoop.conf.Configuration;
@@ -105,6 +107,16 @@ import org.slf4j.LoggerFactory;
  * {@code SocketChannel}), so reads go through {@code NioInetPeer} and
  * {@code SocketIOWithTimeout}, which raises {@code InterruptedIOException} when
  * the blocked thread is interrupted.
+ *
+ * <p>Short-circuit reads must never be interrupted. {@code BlockReaderLocal}
+ * reads through the {@code FileChannel} of a cached
+ * {@code ShortCircuitReplica}, and interrupting a thread blocked on an
+ * interruptible channel closes it for every reader sharing that replica. Such
+ * reads are cancelled without interruption, as upstream
+ * {@code DFSInputStream} cancels its own hedged reads, and then waited for,
+ * which upstream does not need to do because its losers write only to their
+ * own buffers. A per-chunk read mode makes that decision race-free against a
+ * task that reconnects through a short-circuit reader mid-read.
  *
  * <h2>Observability</h2>
  *
@@ -356,6 +368,30 @@ class HubSpotStripedReadHedge {
   private final Map<Integer, CountDownLatch> completion = new HashMap<>();
 
   /**
+   * Per chunk index, set by whichever comes first: the read task starting, or
+   * {@link #stopOutstandingReads} deciding it must never start. The striped
+   * read pool hands tasks straight to a worker (a SynchronousQueue, with
+   * caller-runs on saturation), but a task submitted and not yet picked up when
+   * it is cancelled never runs, so its completion latch never fires; this is
+   * how the canceller knows not to wait for it.
+   */
+  private final Map<Integer, AtomicBoolean> claimed = new HashMap<>();
+
+  /**
+   * The kind of reader a chunk's read task is using, which decides whether it
+   * may be interrupted. Set before the task is submitted and changed only
+   * through {@link #switchToLocal} (task side, on reconnect) and
+   * {@link #beginInterruptibleCancel} (canceller side), so the two cannot race:
+   * a task never starts reading through a short-circuit reader once a
+   * canceller has decided to interrupt it, and a canceller never interrupts a
+   * task that already has.
+   */
+  static final int READ_REMOTE = 0;
+  static final int READ_LOCAL = 1;
+  static final int READ_CANCELLING = 2;
+  private final Map<Integer, AtomicInteger> readMode = new HashMap<>();
+
+  /**
    * Chunk indices already retired in phase 2. Their futures are deliberately
    * left in the caller's {@code futures} map -- see
    * {@link #retireHedgedStragglers} -- so the caller needs to recognise and
@@ -470,8 +506,58 @@ class HubSpotStripedReadHedge {
   CountDownLatch trackCompletionOf(int chunkIndex) {
     CountDownLatch latch = new CountDownLatch(1);
     completion.put(chunkIndex, latch);
+    claimed.put(chunkIndex, new AtomicBoolean());
+    readMode.put(chunkIndex, new AtomicInteger(READ_REMOTE));
     submittedAt.put(chunkIndex, Time.monotonicNow());
     return latch;
+  }
+
+  /**
+   * The read mode for {@code chunkIndex}; the caller sets it to
+   * {@link #READ_LOCAL} before submitting a short-circuit read, and hands it to
+   * the task. Call right after {@link #trackCompletionOf}.
+   */
+  AtomicInteger readModeOf(int chunkIndex) {
+    return readMode.get(chunkIndex);
+  }
+
+  /**
+   * Task side: called after reconnecting through a short-circuit reader.
+   *
+   * @return false if a canceller has already decided to interrupt this task,
+   *         in which case it must not read through that reader at all
+   */
+  static boolean switchToLocal(AtomicInteger mode) {
+    return mode.compareAndSet(READ_REMOTE, READ_LOCAL)
+        || mode.get() == READ_LOCAL;
+  }
+
+  /**
+   * Canceller side.
+   *
+   * @return true if the task may be interrupted, false if it is reading
+   *         through a short-circuit reader and must only be waited for
+   */
+  private boolean beginInterruptibleCancel(int chunkIndex) {
+    final AtomicInteger mode = readMode.get(chunkIndex);
+    if (mode == null) {
+      return true;
+    }
+    return mode.compareAndSet(READ_REMOTE, READ_CANCELLING)
+        || mode.get() == READ_CANCELLING;
+  }
+
+  private boolean isLocal(int chunkIndex) {
+    final AtomicInteger mode = readMode.get(chunkIndex);
+    return mode != null && mode.get() == READ_LOCAL;
+  }
+
+  /**
+   * The claim the read task for {@code chunkIndex} must win before touching any
+   * buffer or reader. Call right after {@link #trackCompletionOf}.
+   */
+  AtomicBoolean runClaimOf(int chunkIndex) {
+    return claimed.get(chunkIndex);
   }
 
   /**
@@ -491,8 +577,8 @@ class HubSpotStripedReadHedge {
    * @return the configured threshold, or 0 to block indefinitely as upstream
    *         does. 0 is returned when hedging is disabled, when the stripe has
    *         no reconstruction capacity left to hedge into, and once every
-   *         outstanding chunk has already been hedged -- at which point
-   *         continuing to poll would only spin.
+   *         outstanding chunk has already been hedged or is a short-circuit
+   *         read -- at which point continuing to poll would only spin.
    */
   long pollTimeoutMillis(Map<Future<BlockReadStats>, Integer> futures,
       AlignedStripe alignedStripe, int parityBlkNum) {
@@ -500,7 +586,7 @@ class HubSpotStripedReadHedge {
       return 0;
     }
     for (Integer index : futures.values()) {
-      if (!hedged.contains(index)) {
+      if (!hedged.contains(index) && !isLocal(index)) {
         return thresholdMillis;
       }
     }
@@ -512,6 +598,10 @@ class HubSpotStripedReadHedge {
    * outstanding chunk and record that we are going to read around it. The
    * caller is expected to issue the additional data and parity reads; this
    * method deliberately does not cancel anything.
+   *
+   * <p>Short-circuit reads are never hedged: they cannot be interrupted (see
+   * the class javadoc), so phase 2 could never retire them and the extra reads
+   * would only add I/O.
    *
    * @return the chunk index now hedged, or -1 if there is nothing to hedge
    */
@@ -528,7 +618,7 @@ class HubSpotStripedReadHedge {
     }
     final long now = Time.monotonicNow();
     for (Integer index : futures.values()) {
-      if (hedged.contains(index)) {
+      if (hedged.contains(index) || isLocal(index)) {
         continue;
       }
       final StripingChunk chunk = alignedStripe.chunks[index];
@@ -604,6 +694,10 @@ class HubSpotStripedReadHedge {
    * <p>So the entry stays, and the caller must skip results for any index
    * reported by {@link #isRetired}.
    *
+   * <p>A straggler not yet picked up by a worker is retired at once: winning
+   * its claim proves it will never run. A short-circuit straggler is never
+   * interrupted (see the class javadoc), so it is left to complete normally.
+   *
    * @return the indices confirmed to have stopped, which the caller may now
    *         mark MISSING and reconstruct. Chunks whose read would not unwind in
    *         time are omitted and left to complete normally.
@@ -623,11 +717,18 @@ class HubSpotStripedReadHedge {
       if (chunk == null || chunk.state != StripingChunk.PENDING) {
         continue;
       }
+      final AtomicBoolean claim = claimed.get(index);
+      if (claim != null && claim.compareAndSet(false, true)) {
+        entry.getKey().cancel(false);
+        retire(index, retired);
+        continue;
+      }
+      if (!beginInterruptibleCancel(index)) {
+        continue;
+      }
       entry.getKey().cancel(true);
       if (awaitCompletionOf(index)) {
-        retired.add(index);
-        retiredIndices.add(index);
-        metrics.incHedgedReadWins();
+        retire(index, retired);
       } else {
         // Could not confirm the read has stopped touching the caller's buffer,
         // so leave it be: it will finish on its own and fill the chunk itself.
@@ -637,6 +738,92 @@ class HubSpotStripedReadHedge {
       }
     }
     return retired;
+  }
+
+  private void retire(int index, List<Integer> retired) {
+    retired.add(index);
+    retiredIndices.add(index);
+    metrics.incHedgedReadWins();
+  }
+
+  /**
+   * Called on every exit from a stripe read that hedged, successful or not.
+   * Upstream never has a read in flight when a stripe completes, because it
+   * only issues the reads it needs; a hedge issues extra ones, and whichever
+   * lose can still be running. Each is cancelled and waited for, so none can
+   * write into a buffer or advance a reader after the stripe returns. Remote
+   * reads are interrupted so they stop promptly; short-circuit reads are not
+   * (see the class javadoc) and are simply waited for.
+   *
+   * <p>The wait has no upper bound and does not give way to an interrupt of
+   * the calling thread: a caller interrupted during a stripe that hedged (for
+   * example a RegionServer shutting down) returns once its losers have stopped,
+   * not immediately. Returning earlier would leave a read writing into a
+   * buffer that goes back to the pool. Remote losers are interrupted, so this
+   * is normally brief; a short-circuit loser is bounded only by its local read.
+   *
+   * @return the indices whose reads were outstanding, all now stopped, whose
+   *         readers the caller must discard. Empty if this stripe never hedged.
+   */
+  List<Integer> stopOutstandingReads(
+      Map<Future<BlockReadStats>, Integer> futures) {
+    final List<Integer> stopped = new ArrayList<>();
+    if (hedged.isEmpty()) {
+      return stopped;
+    }
+    for (Map.Entry<Future<BlockReadStats>, Integer> entry
+        : futures.entrySet()) {
+      final int index = entry.getValue();
+      if (retiredIndices.contains(index)) {
+        continue;
+      }
+      final AtomicBoolean claim = claimed.get(index);
+      if (claim != null && claim.compareAndSet(false, true)) {
+        // Never started, and now never will.
+        entry.getKey().cancel(false);
+        stopped.add(index);
+        continue;
+      }
+      if (!beginInterruptibleCancel(index)) {
+        entry.getKey().cancel(false);
+        if (!awaitCompletionOf(index)) {
+          LOG.warn("Striped read hedge: short-circuit read for chunk {} still "
+              + "running {}ms after its stripe completed; waiting for it",
+              index, quiesceTimeoutMillis);
+          awaitCompletionUninterruptibly(index);
+        }
+        stopped.add(index);
+        continue;
+      }
+      entry.getKey().cancel(true);
+      if (!awaitCompletionOf(index)) {
+        LOG.warn("Striped read hedge: read for chunk {} did not stop within "
+            + "{}ms of cancellation; waiting for it", index,
+            quiesceTimeoutMillis);
+        awaitCompletionUninterruptibly(index);
+      }
+      stopped.add(index);
+    }
+    return stopped;
+  }
+
+  private void awaitCompletionUninterruptibly(int chunkIndex) {
+    final CountDownLatch latch = completion.get(chunkIndex);
+    if (latch == null) {
+      return;
+    }
+    boolean interrupted = false;
+    while (true) {
+      try {
+        latch.await();
+        break;
+      } catch (InterruptedException e) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**
