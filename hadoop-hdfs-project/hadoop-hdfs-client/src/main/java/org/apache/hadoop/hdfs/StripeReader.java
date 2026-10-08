@@ -41,8 +41,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionService;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The reader for reading a complete {@link StripedBlockUtil.AlignedStripe}.
@@ -243,7 +246,8 @@ abstract class StripeReader {
 
   private int readToBuffer(BlockReader blockReader,
       DatanodeInfo currentNode, ByteBufferStrategy strategy,
-      LocatedBlock currentBlock, int chunkIndex) throws IOException {
+      LocatedBlock currentBlock, int chunkIndex, AtomicInteger hubSpotMode)
+      throws IOException {
     final int targetLength = strategy.getTargetLength();
     int curAttempts = 0;
     while (curAttempts < readDNMaxAttempts) {
@@ -269,6 +273,9 @@ abstract class StripeReader {
       } catch (IOException e) {
         //Clear buffer to make next decode success
         strategy.getReadBuffer().clear();
+        if (Thread.currentThread().isInterrupted()) {
+          throw e;
+        }
         if (curAttempts < readDNMaxAttempts - 1) {
           curAttempts++;
           if (readerInfos[chunkIndex].reader != null) {
@@ -278,6 +285,10 @@ abstract class StripeReader {
                                                       alignedStripe.getOffsetInBlock(), targetBlocks,
                                                       readerInfos, chunkIndex, readTo)) {
             blockReader = readerInfos[chunkIndex].reader;
+            if (blockReader.isShortCircuit()
+                && !HubSpotStripedReadHedge.switchToLocal(hubSpotMode)) {
+              throw new InterruptedIOException("Striped read cancelled");
+            }
             String msg = "Reconnect to " + currentNode.getInfoAddr()
                          + " for block " + currentBlock.getBlock();
             DFSClient.LOG.warn(msg);
@@ -298,7 +309,8 @@ abstract class StripeReader {
   private Callable<BlockReadStats> readCells(final BlockReader reader,
       final DatanodeInfo datanode, final long currentReaderOffset,
       final long targetReaderOffset, final ByteBufferStrategy[] strategies,
-      final LocatedBlock currentBlock, final int chunkIndex) {
+      final LocatedBlock currentBlock, final int chunkIndex,
+      final AtomicInteger hubSpotMode) {
     return () -> {
       // reader can be null if getBlockReaderWithRetry failed or
       // the reader hit exception before
@@ -315,7 +327,8 @@ abstract class StripeReader {
 
       int ret = 0;
       for (ByteBufferStrategy strategy : strategies) {
-        int bytesReead = readToBuffer(reader, datanode, strategy, currentBlock, chunkIndex);
+        int bytesReead = readToBuffer(reader, datanode, strategy, currentBlock,
+            chunkIndex, hubSpotMode);
         ret += bytesReead;
       }
       return new BlockReadStats(ret, reader.isShortCircuit(),
@@ -344,22 +357,32 @@ abstract class StripeReader {
     }
 
     chunk.state = StripingChunk.PENDING;
-    Callable<BlockReadStats> readCallable =
-        readCells(readerInfos[chunkIndex].reader,
-        readerInfos[chunkIndex].datanode,
-        readerInfos[chunkIndex].blockReaderOffset,
-        alignedStripe.getOffsetInBlock(), getReadStrategies(chunk),
-        block, chunkIndex);
-
     // HubSpot Edit: the hedge needs to know when a cancelled read has actually
     // stopped touching the caller's buffer. Future.cancel() cannot tell us --
     // FutureTask flips to CANCELLED synchronously while the worker may still be
     // unwinding -- so the task signals completion itself. See
     // HubSpotStripedReadHedge.
-    final java.util.concurrent.CountDownLatch hubSpotDone =
+    final CountDownLatch hubSpotDone =
         hubSpotHedge.trackCompletionOf(chunkIndex);
+    final AtomicBoolean hubSpotClaim =
+        hubSpotHedge.runClaimOf(chunkIndex);
+    final AtomicInteger hubSpotMode = hubSpotHedge.readModeOf(chunkIndex);
+    if (readerInfos[chunkIndex].reader != null
+        && readerInfos[chunkIndex].reader.isShortCircuit()) {
+      hubSpotMode.set(HubSpotStripedReadHedge.READ_LOCAL);
+    }
+    Callable<BlockReadStats> readCallable =
+        readCells(readerInfos[chunkIndex].reader,
+        readerInfos[chunkIndex].datanode,
+        readerInfos[chunkIndex].blockReaderOffset,
+        alignedStripe.getOffsetInBlock(), getReadStrategies(chunk),
+        block, chunkIndex, hubSpotMode);
+
     final Callable<BlockReadStats> hubSpotWrapped = () -> {
       try {
+        if (!hubSpotClaim.compareAndSet(false, true)) {
+          return null;
+        }
         return readCallable.call();
       } finally {
         hubSpotDone.countDown();
@@ -375,6 +398,15 @@ abstract class StripeReader {
    * read the whole stripe. do decoding if necessary
    */
   void readStripe() throws IOException {
+    try {
+      readStripeImpl();
+    } catch (Throwable t) {
+      clearFutures();
+      throw t;
+    }
+  }
+
+  private void readStripeImpl() throws IOException {
     for (int i = 0; i < dataBlkNum; i++) {
       if (alignedStripe.chunks[i] != null &&
           alignedStripe.chunks[i].state != StripingChunk.ALLZERO) {
@@ -560,6 +592,10 @@ abstract class StripeReader {
   }
 
   void clearFutures() {
+    for (int idx : hubSpotHedge.stopOutstandingReads(futures)) {
+      dfsStripedInputStream.closeReader(readerInfos[idx]);
+      readerInfos[idx] = null;
+    }
     for (Future future : futures.keySet()) {
       future.cancel(false);
     }

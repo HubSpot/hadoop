@@ -23,7 +23,9 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,12 +34,16 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
+import org.apache.hadoop.hdfs.util.StripedBlockUtil;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
 import org.junit.After;
@@ -379,6 +385,145 @@ public class TestHubSpotStripedReadHedgeEndToEnd {
     assertArrayEquals(
         "aggressive positional hedging must not corrupt data",
         expected, actual);
+  }
+
+  private LocatedStripedBlock firstBlockGroup() throws IOException {
+    return (LocatedStripedBlock) fs.getClient().getLocatedBlocks(
+        filePath.toString(), 0, 1).get(0);
+  }
+
+  private DatanodeInfo locationOfBlockIndex(LocatedStripedBlock group,
+      int blockIndex) {
+    byte[] indices = group.getBlockIndices();
+    for (int i = 0; i < indices.length; i++) {
+      if (indices[i] == blockIndex) {
+        return group.getLocations()[i];
+      }
+    }
+    throw new IllegalStateException("no location for block index "
+        + blockIndex);
+  }
+
+  /**
+   * Overwrites part of one internal block on disk so that a client reading it
+   * fails checksum verification there, forcing a decode for that cell.
+   */
+  private void corruptInternalBlock(LocatedStripedBlock group, int blockIndex,
+      long offsetInBlock, int len) throws IOException {
+    String uuid = locationOfBlockIndex(group, blockIndex).getDatanodeUuid();
+    ExtendedBlock internal = StripedBlockUtil.constructInternalBlock(
+        group.getBlock(), ecPolicy, blockIndex);
+    for (int i = 0; i < cluster.getDataNodes().size(); i++) {
+      if (cluster.getDataNodes().get(i).getDatanodeUuid().equals(uuid)) {
+        File blockFile = cluster.getBlockFile(i, internal);
+        try (RandomAccessFile raf = new RandomAccessFile(blockFile, "rw")) {
+          byte[] garbage = new byte[len];
+          raf.seek(offsetInBlock);
+          raf.readFully(garbage);
+          for (int b = 0; b < len; b++) {
+            garbage[b] = (byte) ~garbage[b];
+          }
+          raf.seek(offsetInBlock);
+          raf.write(garbage);
+        }
+        return;
+      }
+    }
+    throw new IllegalStateException("no DataNode " + uuid);
+  }
+
+  /**
+   * Stateful (non-positional) reads, which HBase compactions use, keep one
+   * BlockReader per internal block for the whole block group and track each
+   * reader's position in its BlockReaderInfo. Here the hedged straggler in
+   * stripe 0 finishes before the parity read the hedge issued, so the stripe
+   * completes with that parity read still in flight. A later stripe that must
+   * decode then reuses the parity reader.
+   */
+  private byte[] statefulReadAfterHedgeLeavesParityInFlight(
+      long hedgeThresholdMs, long settleMs) throws Exception {
+    final LocatedStripedBlock group = firstBlockGroup();
+    final int cellSize = ecPolicy.getCellSize();
+    final int dataUnits = ecPolicy.getNumDataUnits();
+    final String straggler =
+        locationOfBlockIndex(group, 1).getDatanodeUuid();
+    final String parity =
+        locationOfBlockIndex(group, dataUnits).getDatanodeUuid();
+    final AtomicInteger delayedParityReads = new AtomicInteger();
+    DataNodeFaultInjector.set(new DataNodeFaultInjector() {
+      @Override
+      public void delayBlockTransfer(String datanodeUuid) {
+        long delayMs = 0;
+        if (datanodeUuid.equals(straggler)) {
+          // Past the threshold, but done before a second hedge could fire.
+          delayMs = HEDGE_THRESHOLD_MS + 200;
+        } else if (datanodeUuid.equals(parity)) {
+          delayedParityReads.incrementAndGet();
+          delayMs = 2000;
+        }
+        try {
+          Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    });
+    // Stripe 1 of block index 2 fails checksum, so it must be reconstructed.
+    corruptInternalBlock(group, 2, cellSize + 1024, 4096);
+
+    Configuration clientConf = new Configuration(conf);
+    clientConf.setLong(HEDGE_KEY, hedgeThresholdMs);
+    try (FileSystem client =
+        FileSystem.newInstance(cluster.getURI(0), clientConf);
+        FSDataInputStream in = client.open(filePath)) {
+      int total = (int) client.getFileStatus(filePath).getLen();
+      byte[] actual = new byte[total];
+      int stripeLen = cellSize * dataUnits;
+      long before = hedgedReadOps();
+      IOUtils.readFully(in, actual, 0, stripeLen);
+      long hedges = hedgedReadOps() - before;
+      LOG.info("stripe 0: hedges={} delayedParityReads={}", hedges,
+          delayedParityReads.get());
+      if (hedgeThresholdMs > 0) {
+        assertTrue("stripe 0 must hedge for this test to mean anything",
+            hedges > 0);
+        assertEquals("the hedge must have issued exactly one parity read", 1,
+            delayedParityReads.get());
+      }
+      Thread.sleep(settleMs);
+      IOUtils.readFully(in, actual, stripeLen, total - stripeLen);
+      return actual;
+    }
+  }
+
+  /** The parity read has long finished by the time a later stripe needs it. */
+  @Test
+  public void testStatefulDecodeAfterHedgeLeftParityInFlight()
+      throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    byte[] actual = statefulReadAfterHedgeLeavesParityInFlight(
+        HEDGE_THRESHOLD_MS, 3000);
+    assertArrayEquals("a decode after an orphaned parity read must still "
+        + "return the original bytes", expected, actual);
+  }
+
+  /** The next stripe needs parity while the hedge's parity read still runs. */
+  @Test
+  public void testStatefulDecodeWhileHedgeParityStillInFlight()
+      throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    byte[] actual = statefulReadAfterHedgeLeavesParityInFlight(
+        HEDGE_THRESHOLD_MS, 0);
+    assertArrayEquals("a decode racing an orphaned parity read must still "
+        + "return the original bytes", expected, actual);
+  }
+
+  /** Control: the same corruption is reconstructed correctly with no hedge. */
+  @Test
+  public void testStatefulDecodeWithoutHedgeIsCorrect() throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    byte[] actual = statefulReadAfterHedgeLeavesParityInFlight(0, 3000);
+    assertArrayEquals(expected, actual);
   }
 
   /** With the hedge disabled, behaviour must be exactly as upstream. */
