@@ -63,8 +63,9 @@ public class BlockPlacementPolicyErasureCoding
    * Verify the placement of an erasure-coded block group using the internal
    * block index each location holds.
    * <p>
-   * This enforces both the inherited rack-spreading requirement (via the
-   * superclass) and a per-failure-domain durability requirement. For the latter,
+   * This enforces both a rack-spreading requirement (the group occupies as many
+   * failure domains as it can) and a per-failure-domain durability requirement.
+   * For the latter,
    * for every internal-block index the set of failure domains that hold a copy
    * is collected. An index counts against a domain only when that domain holds
    * the sole copy of it; an index that has been duplicated into a second domain
@@ -82,15 +83,14 @@ public class BlockPlacementPolicyErasureCoding
    *          i.e. the parity count, which is the most a single failure domain
    *          may hold uniquely
    */
-  public BlockPlacementStatus verifyBlockPlacement(DatanodeInfo[] locs,
-      byte[] blockIndices, int totalInternalBlocks, int maxLossesPerDomain) {
+  public BlockPlacementStatusErasureCoding verifyBlockPlacement(
+      DatanodeInfo[] locs, byte[] blockIndices, int totalInternalBlocks,
+      int maxLossesPerDomain) {
     if (locs == null) {
       locs = DatanodeDescriptor.EMPTY_ARRAY;
     }
-    // The inherited rack-fault-tolerant check: spread across as many failure
-    // domains as possible. This also handles the single-rack case (satisfied).
     final BlockPlacementStatus rackSpreadStatus =
-        super.verifyBlockPlacement(locs, totalInternalBlocks);
+        verifyRackSpread(locs, totalInternalBlocks);
 
     if (!clusterMap.hasClusterEverBeenMultiRack()) {
       // With a single failure domain no placement can survive its loss, so the
@@ -126,5 +126,28 @@ public class BlockPlacementPolicyErasureCoding
 
     return new BlockPlacementStatusErasureCoding(rackSpreadStatus,
         soleCopiesPerDomain, reliefCopies, maxLossesPerDomain);
+  }
+
+  /**
+   * The rack-spreading requirement: the group should occupy as many failure
+   * domains as it can, i.e. {@code min(totalInternalBlocks, racks)}. The
+   * additional replicas reported are the number of domains still missing, so a
+   * group that occupies 2 of 3 racks needs exactly one more copy, not one per
+   * internal block it would take to fill every rack.
+   */
+  private BlockPlacementStatus verifyRackSpread(DatanodeInfo[] locs,
+      int totalInternalBlocks) {
+    if (!clusterMap.hasClusterEverBeenMultiRack()) {
+      // With a single failure domain the requirement is trivially met.
+      return new BlockPlacementStatusDefault(1, 1, 1);
+    }
+    Set<String> racks = new HashSet<>();
+    for (DatanodeInfo dn : locs) {
+      racks.add(dn.getNetworkLocation());
+    }
+    final int totalRacks = clusterMap.getNumOfNonEmptyRacks();
+    final int requiredRacks = Math.min(totalInternalBlocks, totalRacks);
+    return new BlockPlacementStatusDefault(racks.size(), requiredRacks,
+        totalRacks);
   }
 }

@@ -83,7 +83,8 @@ public class TestBlockPlacementPolicyErasureCoding {
       return this;
     }
 
-    BlockPlacementStatus verify(int totalInternalBlocks, int maxLossesPerDomain) {
+    BlockPlacementStatusErasureCoding verify(int totalInternalBlocks,
+        int maxLossesPerDomain) {
       byte[] idx = new byte[indices.size()];
       for (int i = 0; i < idx.length; i++) {
         idx[i] = indices.get(i);
@@ -213,6 +214,42 @@ public class TestBlockPlacementPolicyErasureCoding {
     assertEquals(0, withCopy);
     assertTrue("Removing a copy that relieves an over-concentrated domain must "
         + "raise the requirement", withoutCopy > withCopy);
+  }
+
+  @Test
+  public void testMissingRackRequiresOneCopyPerMissingRack() {
+    // Safe per domain (indices 3-5 are on both racks, leaving 3 sole copies
+    // each) but the group occupies only 2 of the cluster's 3 racks. One copy
+    // onto /r3 fixes it, so exactly one is required.
+    newNode("/r3");
+    BlockPlacementStatus status = new Placement()
+        .on("/r1", 0, 1, 2, 3, 4, 5)
+        .on("/r2", 3, 4, 5, 6, 7, 8)
+        .verify(DATA_UNITS + PARITY_UNITS, PARITY_UNITS);
+    assertFalse(status.isPlacementPolicySatisfied());
+    assertEquals(1, status.getAdditionalReplicasRequired());
+  }
+
+  @Test
+  public void testRemovingAProtectiveCopyIsLessSafeEvenWhileARackIsMissing() {
+    // The decommissioning case: /r1 holds no live copy, /r2 is over budget.
+    // Copying an /r2 index onto /r3 relieves /r2. Removing that copy must be
+    // seen as less safe even though the group is still missing /r1.
+    newNode("/r1");
+    BlockPlacementStatusErasureCoding withCopy = new Placement()
+        .on("/r3", 0, 1)
+        .on("/r2", 2, 3, 4, 5, 6, 7, 8)
+        .on("/r3", 2)
+        .verify(DATA_UNITS + PARITY_UNITS, PARITY_UNITS);
+    BlockPlacementStatusErasureCoding withoutCopy = new Placement()
+        .on("/r3", 0, 1)
+        .on("/r2", 2, 3, 4, 5, 6, 7, 8)
+        .verify(DATA_UNITS + PARITY_UNITS, PARITY_UNITS);
+    assertEquals(1, withCopy.getMissingRacks());
+    assertEquals(3, withCopy.getDurabilityShortfall());
+    assertEquals(4, withoutCopy.getDurabilityShortfall());
+    assertTrue(withoutCopy.isLessSafeThan(withCopy));
+    assertFalse(withCopy.isLessSafeThan(withoutCopy));
   }
 
   @Test

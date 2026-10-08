@@ -2437,6 +2437,13 @@ public class BlockManager implements BlockStatsMXBean {
 
     // Add block to the datanode's task list
     rw.addTaskToDatanode(numReplicas);
+    // The task may use only some of the chosen targets; only those are
+    // scheduled and awaited.
+    targets = rw.getTargets();
+    if (targets == null || targets.length == 0) {
+      rw.resetTargets();
+      return false;
+    }
     DatanodeStorageInfo.incrementBlocksScheduled(targets);
 
     // Move the block-replication into a "pending" state.
@@ -4371,18 +4378,25 @@ public class BlockManager implements BlockStatsMXBean {
       storage2index.put(storage, index);
     }
 
-    if (duplicated.isEmpty()) {
-      LOG.debug("Found no duplicated internal blocks for {}. Maybe it's " +
-          "because there are stale storages.", storedBlock);
-      return;
-    }
+    BlockPlacementPolicy placementPolicy = placementPolicies.getPolicy(STRIPED);
+    // BlockPlacementPolicyErasureCoding keeps extra copies of an internal block
+    // on purpose to keep every failure domain within its loss budget. Such a
+    // copy may only be reclaimed when removing it does not make the group less
+    // safe; redundant copies that protect no domain are still reclaimed so their
+    // capacity can be reused to fix a genuinely over-concentrated domain.
+    final boolean durabilityAware =
+        placementPolicy instanceof BlockPlacementPolicyErasureCoding;
 
-    // use delNodeHint only if delNodeHint is duplicated
+    // use delNodeHint only if delNodeHint is duplicated, and (for the
+    // durability-aware policy) only if that copy is not protecting the group
     final DatanodeStorageInfo delStorageHint =
         DatanodeStorageInfo.getDatanodeStorageInfo(nonExcess, delNodeHint.getDatanode());
     if (delStorageHint != null) {
       Integer index = storage2index.get(delStorageHint);
-      if (index != null && duplicated.get(index)) {
+      if (index != null && duplicated.get(index)
+          && !(durabilityAware && removalWouldReduceSafety(sblk, nonExcess,
+              delStorageHint,
+              (BlockPlacementPolicyErasureCoding) placementPolicy))) {
         processChosenExcessRedundancy(nonExcess, delStorageHint, delNodeHint.getGracePeriod(), storedBlock);
         logEmptyExcessType = false;
       }
@@ -4402,14 +4416,6 @@ public class BlockManager implements BlockStatsMXBean {
       return;
     }
 
-    BlockPlacementPolicy placementPolicy = placementPolicies.getPolicy(STRIPED);
-    // BlockPlacementPolicyErasureCoding keeps extra copies of an internal block
-    // on purpose to keep every failure domain within its loss budget. Such a
-    // copy may only be reclaimed when removing it does not make the group less
-    // safe; redundant copies that protect no domain are still reclaimed so their
-    // capacity can be reused to fix a genuinely over-concentrated domain.
-    final boolean durabilityAware =
-        placementPolicy instanceof BlockPlacementPolicyErasureCoding;
     // for each duplicated index, delete some replicas until only one left
     for (int targetIndex = duplicated.nextSetBit(0); targetIndex >= 0;
          targetIndex = duplicated.nextSetBit(targetIndex + 1)) {
@@ -4450,27 +4456,28 @@ public class BlockManager implements BlockStatsMXBean {
 
   /**
    * Whether removing {@code excluded} from the group's live storages would make
-   * the erasure-coded placement less safe, i.e. increase the number of extra
-   * copies the policy requires. Only copies that actually protect a failure
-   * domain from over-concentration are kept this way; a redundant copy that does
-   * not improve safety is still reclaimed so its capacity can be reused.
+   * the erasure-coded placement less safe: the group would occupy fewer of the
+   * failure domains it should, or more internal blocks would be at risk of a
+   * single-domain loss. Only copies that actually protect the group are kept
+   * this way; a redundant copy that does not improve safety is still reclaimed
+   * so its capacity can be reused.
    */
   private boolean removalWouldReduceSafety(BlockInfoStriped sblk,
       Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
       BlockPlacementPolicyErasureCoding placementPolicy) {
-    int withCopy =
-        ecAdditionalReplicasRequired(sblk, nonExcess, null, placementPolicy);
-    int withoutCopy =
-        ecAdditionalReplicasRequired(sblk, nonExcess, excluded, placementPolicy);
-    return withoutCopy > withCopy;
+    BlockPlacementStatusErasureCoding withCopy =
+        ecPlacementStatus(sblk, nonExcess, null, placementPolicy);
+    BlockPlacementStatusErasureCoding withoutCopy =
+        ecPlacementStatus(sblk, nonExcess, excluded, placementPolicy);
+    return withoutCopy.isLessSafeThan(withCopy);
   }
 
   /**
-   * The number of extra copies the EC placement policy requires for the group
-   * backed by {@code nonExcess}, optionally ignoring the {@code excluded}
-   * storage.
+   * The EC placement status of the group backed by {@code nonExcess},
+   * optionally ignoring the {@code excluded} storage.
    */
-  private int ecAdditionalReplicasRequired(BlockInfoStriped sblk,
+  private BlockPlacementStatusErasureCoding ecPlacementStatus(
+      BlockInfoStriped sblk,
       Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
       BlockPlacementPolicyErasureCoding placementPolicy) {
     List<DatanodeInfo> locs = new ArrayList<>();
@@ -4488,8 +4495,7 @@ public class BlockManager implements BlockStatsMXBean {
     }
     return placementPolicy.verifyBlockPlacement(
         locs.toArray(new DatanodeInfo[0]), blockIndices,
-        sblk.getRealTotalBlockNum(), sblk.getParityBlockNum())
-        .getAdditionalReplicasRequired();
+        sblk.getRealTotalBlockNum(), sblk.getParityBlockNum());
   }
 
   private void processChosenExcessRedundancy(

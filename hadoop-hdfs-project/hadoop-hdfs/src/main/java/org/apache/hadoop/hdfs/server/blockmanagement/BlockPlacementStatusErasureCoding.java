@@ -130,4 +130,32 @@ public class BlockPlacementStatusErasureCoding implements BlockPlacementStatus {
   public int getAdditionalReplicasRequired() {
     return Math.max(rackSpreadStatus.getAdditionalReplicasRequired(), shortfall);
   }
+
+  /**
+   * The number of additional failure domains the group still has to occupy to
+   * satisfy the rack-spreading requirement.
+   */
+  public int getMissingRacks() {
+    return rackSpreadStatus.getAdditionalReplicasRequired();
+  }
+
+  /**
+   * The number of internal blocks that still have to be copied into another
+   * domain before every domain is within its loss budget.
+   */
+  public int getDurabilityShortfall() {
+    return shortfall;
+  }
+
+  /**
+   * Whether this placement is strictly less safe than {@code other} in either
+   * requirement: it occupies fewer of the domains it should, or more internal
+   * blocks are at risk of a single-domain loss. The two requirements are
+   * compared separately so that a large deficit in one cannot mask a change in
+   * the other.
+   */
+  public boolean isLessSafeThan(BlockPlacementStatusErasureCoding other) {
+    return getMissingRacks() > other.getMissingRacks()
+        || getDurabilityShortfall() > other.getDurabilityShortfall();
+  }
 }
