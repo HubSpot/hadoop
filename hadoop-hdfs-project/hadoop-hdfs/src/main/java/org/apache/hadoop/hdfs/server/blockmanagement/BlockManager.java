@@ -4426,7 +4426,11 @@ public class BlockManager implements BlockStatsMXBean {
           candidates.add(storage);
         }
       }
-      if (candidates.size() > 1) {
+      if (durabilityAware) {
+        chooseExcessRedundancyStripedIndex(sblk, nonExcess, candidates,
+            excessTypes, (BlockPlacementPolicyErasureCoding) placementPolicy,
+            delNodeHint.getGracePeriod());
+      } else if (candidates.size() > 1) {
         List<DatanodeStorageInfo> replicasToDelete = placementPolicy
             .chooseReplicasToDelete(nonExcess, candidates, (short) 1,
                 excessTypes, null, null);
@@ -4439,18 +4443,63 @@ public class BlockManager implements BlockStatsMXBean {
         Preconditions.checkArgument(candidates.containsAll(replicasToDelete),
             "The EC replicas to be deleted are not in the candidate list");
         for (DatanodeStorageInfo chosen : replicasToDelete) {
-          if (durabilityAware && removalWouldReduceSafety(
-              sblk, nonExcess, chosen,
-              (BlockPlacementPolicyErasureCoding) placementPolicy)) {
-            // This copy is protecting a failure domain from over-concentration,
-            // so keep it as intentional over-replication.
-            continue;
-          }
           processChosenExcessRedundancy(nonExcess, chosen, delNodeHint.getGracePeriod(), storedBlock);
           candidates.remove(chosen);
         }
       }
       duplicated.clear(targetIndex);
+    }
+  }
+
+  /**
+   * Reclaim redundant copies of one internal block under {@link
+   * BlockPlacementPolicyErasureCoding}. Copies are removed one at a time, and
+   * each victim is chosen only among the copies whose removal would not make
+   * the group less safe given everything removed so far; the placement policy
+   * still picks among those (by rack spread and free space). This stops when a
+   * single copy remains or every remaining copy protects the group.
+   * <p>
+   * Removing a copy can only make other copies more protective, never less,
+   * so one pass over the duplicated indices leaves no reclaimable copy behind.
+   */
+  private void chooseExcessRedundancyStripedIndex(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess,
+      List<DatanodeStorageInfo> candidates, List<StorageType> excessTypes,
+      BlockPlacementPolicyErasureCoding placementPolicy, long gracePeriodMs) {
+    while (candidates.size() > 1) {
+      List<DatanodeStorageInfo> reclaimable = new ArrayList<>();
+      for (DatanodeStorageInfo candidate : candidates) {
+        if (!removalWouldReduceSafety(sblk, nonExcess, candidate,
+            placementPolicy)) {
+          reclaimable.add(candidate);
+        }
+      }
+      if (reclaimable.isEmpty()) {
+        LOG.debug("Keeping {} copies of an internal block of {} on {}: each"
+            + " protects the group's placement", candidates.size(), sblk,
+            candidates);
+        return;
+      }
+      // Ask the policy to drop exactly one of the reclaimable copies.
+      List<DatanodeStorageInfo> chosen = placementPolicy.chooseReplicasToDelete(
+          nonExcess, reclaimable, reclaimable.size() - 1, excessTypes, null,
+          null);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Choose redundant EC replica of {} to delete among {}"
+            + " (reclaimable {}): {}", sblk, candidates, reclaimable, chosen);
+      }
+      if (chosen.isEmpty()) {
+        return;
+      }
+      Preconditions.checkState(chosen.size() == 1
+              && reclaimable.contains(chosen.get(0)),
+          "Expected one reclaimable EC replica to delete, got %s", chosen);
+      // Never drop the last copy of an internal block.
+      Preconditions.checkState(candidates.size() > 1,
+          "Refusing to delete the last copy of an internal block of %s", sblk);
+      processChosenExcessRedundancy(nonExcess, chosen.get(0), gracePeriodMs,
+          sblk);
+      candidates.remove(chosen.get(0));
     }
   }
 
