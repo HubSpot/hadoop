@@ -192,4 +192,23 @@ public class BlockPlacementPolicyErasureCoding
     return new BlockPlacementStatusDefault(racks.size(), requiredRacks,
         totalRacks);
   }
+
+  /**
+   * The failure domains that cannot take another internal block as its only
+   * copy: they already hold {@code maxLossesPerDomain} or more internal blocks
+   * that exist nowhere else. A copy placed there to relieve another domain can
+   * never become the sole copy, so the original can never be reclaimed.
+   */
+  Set<String> domainsWithoutSpareCapacity(String[] domains, byte[] indices,
+      int totalInternalBlocks, int maxLossesPerDomain) {
+    BlockPlacementStatusErasureCoding status = verifyPlacement(domains,
+        indices, totalInternalBlocks, maxLossesPerDomain);
+    Set<String> full = new HashSet<>();
+    for (String domain : domains) {
+      if (status.getSoleCopies(domain) >= maxLossesPerDomain) {
+        full.add(domain);
+      }
+    }
+    return full;
+  }
 }
