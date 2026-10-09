@@ -36,13 +36,6 @@ class ErasureCodingWork extends BlockReconstructionWork {
   private final byte[] liveBusyBlockIndices;
   private final byte[] excludeReconstructedIndices;
   private final String blockPoolId;
-  /**
-   * Whether the targets were chosen for {@link
-   * BlockPlacementPolicyErasureCoding}, whose placement requirement can need
-   * several copies (each relieving a different over-concentrated domain)
-   * rather than a single copy onto a new rack.
-   */
-  private boolean durabilityAware = false;
 
   public ErasureCodingWork(String blockPoolId, BlockInfo block,
       BlockCollection bc,
@@ -70,8 +63,6 @@ class ErasureCodingWork extends BlockReconstructionWork {
   void chooseTargets(BlockPlacementPolicy blockplacement,
       BlockStoragePolicySuite storagePolicySuite,
       Set<Node> excludedNodes) {
-    durabilityAware =
-        blockplacement instanceof BlockPlacementPolicyErasureCoding;
     // TODO: new placement policy for EC considering multiple writers
     DatanodeStorageInfo[] chosenTargets = null;
     // HDFS-14720. If the block is deleted, the block size will become
@@ -116,34 +107,6 @@ class ErasureCodingWork extends BlockReconstructionWork {
       }
     }
     return true;
-  }
-
-  /**
-   * We have all the internal blocks but not enough racks. Thus we do not need
-   * to do decoding but only simply make an extra copy of an internal block. In
-   * this scenario, use this method to choose the source datanode for simple
-   * replication.
-   * @return The index of the source datanode.
-   */
-  private int chooseSource4SimpleReplication() {
-    Map<String, List<Integer>> map = new HashMap<>();
-    for (int i = 0; i < getSrcNodes().length; i++) {
-      final String rack = getSrcNodes()[i].getNetworkLocation();
-      List<Integer> dnList = map.get(rack);
-      if (dnList == null) {
-        dnList = new ArrayList<>();
-        map.put(rack, dnList);
-      }
-      dnList.add(i);
-    }
-    List<Integer> max = null;
-    for (Map.Entry<String, List<Integer>> entry : map.entrySet()) {
-      if (max == null || entry.getValue().size() > max.size()) {
-        max = entry.getValue();
-      }
-    }
-    assert max != null;
-    return max.get(0);
   }
 
   /**
@@ -275,16 +238,10 @@ class ErasureCodingWork extends BlockReconstructionWork {
     // Some branches below give work to only some of the chosen targets; the
     // targets are trimmed to those so that pending reconstruction only waits
     // for copies that were actually requested.
-    if (hasNotEnoughRack() && durabilityAware) {
+    if (hasNotEnoughRack()) {
       // All internal blocks are live but the placement is unsafe. Copy
       // internal blocks into the targets, each one chosen to fix the placement.
       setTargets(addPlacementRelievingCopies(targets, stripedBlk));
-    } else if (hasNotEnoughRack()) {
-      // if we already have all the internal blocks, but not enough racks,
-      // we only need to replicate one internal block to a new rack
-      int sourceIndex = chooseSource4SimpleReplication();
-      createReplicationWork(sourceIndex, targets[0]);
-      setTargets(new DatanodeStorageInfo[] {targets[0]});
     } else if ((numberReplicas.decommissioning() > 0 ||
         numberReplicas.liveEnteringMaintenanceReplicas() > 0) &&
         hasAllInternalBlocks()) {

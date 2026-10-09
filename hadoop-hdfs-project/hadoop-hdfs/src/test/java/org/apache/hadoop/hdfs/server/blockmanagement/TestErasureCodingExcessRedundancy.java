@@ -102,11 +102,7 @@ public class TestErasureCodingExcessRedundancy {
     bm = new BlockManager(fsn, false, conf);
     bm.setInitializedReplQueues(true);
     topology = bm.getDatanodeManager().getNetworkTopology();
-    assertTrue("the default EC placement policy should be the EC-aware one",
-        bm.getStriptedBlockPlacementPolicy()
-            instanceof BlockPlacementPolicyErasureCoding);
-    policy = (BlockPlacementPolicyErasureCoding)
-        bm.getStriptedBlockPlacementPolicy();
+    policy = bm.getStriptedBlockPlacementPolicy();
 
     inService = new TreeMap<>();
     decommissioning = new TreeMap<>();

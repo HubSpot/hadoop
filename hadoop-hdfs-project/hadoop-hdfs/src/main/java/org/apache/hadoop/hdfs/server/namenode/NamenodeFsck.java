@@ -75,8 +75,6 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped.StorageAndBlockIndex;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicies;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicy;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyErasureCoding;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementStatus;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
@@ -830,22 +828,18 @@ public class NamenodeFsck implements DataEncryptionKeyFactory {
       }
 
       // count mis replicated blocks
-      final BlockPlacementPolicy placementPolicy =
-          bpPolicies.getPolicy(lBlk.getBlockType());
       final BlockPlacementStatus blockPlacementStatus;
-      if (storedBlock.isStriped() && lBlk instanceof LocatedStripedBlock
-          && placementPolicy instanceof BlockPlacementPolicyErasureCoding) {
+      if (storedBlock.isStriped()) {
         // Give the EC policy the internal-block index each location holds so it
         // can check per-failure-domain durability rather than only rack count.
         BlockInfoStriped stripedBlock = (BlockInfoStriped) storedBlock;
-        blockPlacementStatus =
-            ((BlockPlacementPolicyErasureCoding) placementPolicy)
-                .verifyBlockPlacement(lBlk.getLocations(),
-                    ((LocatedStripedBlock) lBlk).getBlockIndices(),
-                    stripedBlock.getRealTotalBlockNum(),
-                    stripedBlock.getParityBlockNum());
+        blockPlacementStatus = bpPolicies.getErasureCodingPolicy()
+            .verifyBlockPlacement(lBlk.getLocations(),
+                ((LocatedStripedBlock) lBlk).getBlockIndices(),
+                stripedBlock.getRealTotalBlockNum(),
+                stripedBlock.getParityBlockNum());
       } else {
-        blockPlacementStatus = placementPolicy
+        blockPlacementStatus = bpPolicies.getPolicy(lBlk.getBlockType())
             .verifyBlockPlacement(lBlk.getLocations(), targetFileReplication);
       }
       if (!blockPlacementStatus.isPlacementPolicySatisfied()) {

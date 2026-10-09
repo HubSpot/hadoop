@@ -119,8 +119,7 @@ public class TestErasureCodingPlacementEndToEnd {
   }
 
   private BlockPlacementPolicyErasureCoding policy() {
-    return (BlockPlacementPolicyErasureCoding)
-        bm().getStriptedBlockPlacementPolicy();
+    return bm().getStriptedBlockPlacementPolicy();
   }
 
   private List<BlockInfoStriped> groups(Path file) {

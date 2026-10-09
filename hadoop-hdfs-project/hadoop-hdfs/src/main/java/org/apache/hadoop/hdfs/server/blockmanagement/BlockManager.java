@@ -847,8 +847,8 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   @VisibleForTesting
-  public BlockPlacementPolicy getStriptedBlockPlacementPolicy() {
-    return placementPolicies.getPolicy(STRIPED);
+  public BlockPlacementPolicyErasureCoding getStriptedBlockPlacementPolicy() {
+    return placementPolicies.getErasureCodingPolicy();
   }
 
   public void refreshBlockPlacementPolicy(Configuration conf) {
@@ -4347,13 +4347,11 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   /**
-   * We want block group has every internal block, but we have redundant
-   * internal blocks (which have the same index).
-   * In this method, we delete the redundant internal blocks until only one
-   * left for each index.
-   *
-   * The block placement policy will make sure that the left internal blocks are
-   * spread across racks and also try hard to pick one with least free space.
+   * The block group has redundant internal blocks (several copies of the same
+   * index). Reclaim every redundant copy that does not protect the group's
+   * placement under {@link BlockPlacementPolicyErasureCoding}; copies that keep
+   * a failure domain within its loss budget, or keep the group spread across
+   * domains, are kept as intentional over-replication.
    */
   private void chooseExcessRedundancyStriped(BlockCollection bc,
       final Collection<DatanodeStorageInfo> nonExcess,
@@ -4378,25 +4376,23 @@ public class BlockManager implements BlockStatsMXBean {
       storage2index.put(storage, index);
     }
 
-    BlockPlacementPolicy placementPolicy = placementPolicies.getPolicy(STRIPED);
     // BlockPlacementPolicyErasureCoding keeps extra copies of an internal block
     // on purpose to keep every failure domain within its loss budget. Such a
     // copy may only be reclaimed when removing it does not make the group less
     // safe; redundant copies that protect no domain are still reclaimed so their
     // capacity can be reused to fix a genuinely over-concentrated domain.
-    final boolean durabilityAware =
-        placementPolicy instanceof BlockPlacementPolicyErasureCoding;
+    final BlockPlacementPolicyErasureCoding placementPolicy =
+        placementPolicies.getErasureCodingPolicy();
 
-    // use delNodeHint only if delNodeHint is duplicated, and (for the
-    // durability-aware policy) only if that copy is not protecting the group
+    // use delNodeHint only if delNodeHint is duplicated and that copy is not
+    // protecting the group
     final DatanodeStorageInfo delStorageHint =
         DatanodeStorageInfo.getDatanodeStorageInfo(nonExcess, delNodeHint.getDatanode());
     if (delStorageHint != null) {
       Integer index = storage2index.get(delStorageHint);
       if (index != null && duplicated.get(index)
-          && !(durabilityAware && removalWouldReduceSafety(sblk, nonExcess,
-              delStorageHint,
-              (BlockPlacementPolicyErasureCoding) placementPolicy))) {
+          && !removalWouldReduceSafety(sblk, nonExcess, delStorageHint,
+              placementPolicy)) {
         processChosenExcessRedundancy(nonExcess, delStorageHint, delNodeHint.getGracePeriod(), storedBlock);
         logEmptyExcessType = false;
       }
@@ -4426,27 +4422,8 @@ public class BlockManager implements BlockStatsMXBean {
           candidates.add(storage);
         }
       }
-      if (durabilityAware) {
-        chooseExcessRedundancyStripedIndex(sblk, nonExcess, candidates,
-            excessTypes, (BlockPlacementPolicyErasureCoding) placementPolicy,
-            delNodeHint.getGracePeriod());
-      } else if (candidates.size() > 1) {
-        List<DatanodeStorageInfo> replicasToDelete = placementPolicy
-            .chooseReplicasToDelete(nonExcess, candidates, (short) 1,
-                excessTypes, null, null);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Choose redundant EC replicas to delete from blk_{} which is located in {}",
-              sblk.getBlockId(), storage2index);
-          LOG.debug("Storages with candidate blocks to be deleted: {}", candidates);
-          LOG.debug("Storages with blocks to be deleted: {}", replicasToDelete);
-        }
-        Preconditions.checkArgument(candidates.containsAll(replicasToDelete),
-            "The EC replicas to be deleted are not in the candidate list");
-        for (DatanodeStorageInfo chosen : replicasToDelete) {
-          processChosenExcessRedundancy(nonExcess, chosen, delNodeHint.getGracePeriod(), storedBlock);
-          candidates.remove(chosen);
-        }
-      }
+      chooseExcessRedundancyStripedIndex(sblk, nonExcess, candidates,
+          excessTypes, placementPolicy, delNodeHint.getGracePeriod());
       duplicated.clear(targetIndex);
     }
   }
@@ -5248,24 +5225,17 @@ public class BlockManager implements BlockStatsMXBean {
     final boolean striped = storedBlock.isStriped();
     final BlockInfoStriped stripedBlock =
         striped ? (BlockInfoStriped) storedBlock : null;
-    final BlockPlacementPolicy placementPolicy = placementPolicies
-        .getPolicy(storedBlock.getBlockType());
-    // Only the erasure-coding-aware policy can make use of the per-location
-    // internal-block indices; every other policy is verified by internal-block
-    // count as before.
-    final boolean ecAware =
-        striped && placementPolicy instanceof BlockPlacementPolicyErasureCoding;
     List<DatanodeDescriptor> liveNodes = new ArrayList<>();
-    // For the EC-aware policy, the internal-block index each location holds,
-    // kept in step with liveNodes so it can reason about per-domain loss.
-    List<Byte> liveIndices = ecAware ? new ArrayList<>() : null;
+    // For a striped block, the internal-block index each location holds, kept
+    // in step with liveNodes so the EC policy can reason about per-domain loss.
+    List<Byte> liveIndices = striped ? new ArrayList<>() : null;
     if (additionalStorage != null) {
       // additionalNodes, are potential new targets for the block. If there are
       // any passed, include them when checking the placement policy to see if
       // the policy is met, when it may not have been met without these nodes.
       for (DatanodeStorageInfo s : additionalStorage) {
         liveNodes.add(getDatanodeDescriptorFromStorage(s));
-        if (ecAware) {
+        if (striped) {
           // A proposed new target's internal-block index is not yet fixed; mark
           // it so the EC policy treats it as an extra copy that can relieve an
           // over-concentrated failure domain.
@@ -5303,25 +5273,23 @@ public class BlockManager implements BlockStatsMXBean {
       if (!cur.isDecommissionInProgress() && !cur.isDecommissioned()
           && ((corruptNodes == null) || !corruptNodes.contains(cur))) {
         liveNodes.add(cur);
-        if (ecAware) {
+        if (striped) {
           liveIndices.add((byte) stripedBlock.getStorageBlockIndex(storage));
         }
       }
     }
     DatanodeInfo[] locs = liveNodes.toArray(new DatanodeInfo[liveNodes.size()]);
-    if (ecAware) {
+    if (striped) {
       byte[] indices = new byte[liveIndices.size()];
       for (int i = 0; i < indices.length; i++) {
         indices[i] = liveIndices.get(i);
       }
-      return ((BlockPlacementPolicyErasureCoding) placementPolicy)
-          .verifyBlockPlacement(locs, indices,
-              stripedBlock.getRealTotalBlockNum(),
-              stripedBlock.getParityBlockNum());
+      return placementPolicies.getErasureCodingPolicy().verifyBlockPlacement(
+          locs, indices, stripedBlock.getRealTotalBlockNum(),
+          stripedBlock.getParityBlockNum());
     }
-    int numReplicas = striped ? stripedBlock.getRealTotalBlockNum()
-        : storedBlock.getReplication();
-    return placementPolicy.verifyBlockPlacement(locs, numReplicas);
+    return placementPolicies.getPolicy(CONTIGUOUS)
+        .verifyBlockPlacement(locs, storedBlock.getReplication());
   }
 
   boolean isNeededReconstructionForMaintenance(BlockInfo storedBlock,

@@ -46,8 +46,9 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
  * otherwise be unsafe, this policy prefers over-replication to
  * under-replication.
  * <p>
- * This is the default (and recommended) placement policy for erasure-coded
- * blocks; see {@code dfs.block.placement.ec.classname}.
+ * This is the placement policy for all erasure-coded blocks; it is not
+ * configurable, because the block manager's reconstruction and excess
+ * handling for striped blocks depend on its per-domain rule.
  * <p>
  * Target selection is inherited from {@link
  * BlockPlacementPolicyRackFaultTolerant}, which spreads internal blocks across

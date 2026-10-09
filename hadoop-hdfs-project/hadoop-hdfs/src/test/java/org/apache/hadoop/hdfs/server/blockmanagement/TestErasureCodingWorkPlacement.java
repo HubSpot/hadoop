@@ -74,6 +74,8 @@ public class TestErasureCodingWorkPlacement {
     policy.clusterMap = topology;
     block = new BlockInfoStriped(new Block(BLOCK_ID,
         (long) RS_6_3.getCellSize() * RS_6_3.getNumDataUnits(), 1), RS_6_3);
+    // A block with no owning file counts as deleted and is never reconstructed.
+    block.setBlockCollectionId(1001L);
     nextHost = 0;
     live.clear();
     liveIndices.clear();
@@ -232,22 +234,6 @@ public class TestErasureCodingWorkPlacement {
     assertEquals(1, copies.size());
     assertEquals(1, work.getTargets().length);
     assertTrue(placementAfter(copies).isPlacementPolicySatisfied());
-  }
-
-  /** The rack-count policy still copies once, and only awaits that copy. */
-  @Test
-  public void testRackFaultTolerantPolicyAwaitsOnlyTheOneCopy() {
-    placeLive("/c", 0, 1);
-    placeLive("/b", 2, 3, 4, 5, 6, 7, 8);
-
-    DatanodeStorageInfo[] chosen = targets("/a", "/a", "/c");
-    ErasureCodingWork work = newWork(
-        mock(BlockPlacementPolicyRackFaultTolerant.class), chosen);
-    work.addTaskToDatanode(new NumberReplicas());
-
-    assertEquals(1, scheduledCopies().size());
-    assertEquals(1, work.getTargets().length);
-    assertEquals(chosen[0], work.getTargets()[0]);
   }
 
   private static List<Byte> indicesOf(List<Object[]> copies) {
