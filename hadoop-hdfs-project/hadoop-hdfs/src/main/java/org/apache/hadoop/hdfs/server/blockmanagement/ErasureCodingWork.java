@@ -36,6 +36,12 @@ class ErasureCodingWork extends BlockReconstructionWork {
   private final byte[] liveBusyBlockIndices;
   private final byte[] excludeReconstructedIndices;
   private final String blockPoolId;
+  /**
+   * Whether every internal block is live and the work only fixes placement,
+   * so its targets should be in failure domains that can take a moved
+   * internal block.
+   */
+  private boolean placementOnly = false;
 
   public ErasureCodingWork(String blockPoolId, BlockInfo block,
       BlockCollection bc,
@@ -59,6 +65,11 @@ class ErasureCodingWork extends BlockReconstructionWork {
     return liveBlockIndices;
   }
 
+  /** Mark the work as only fixing placement; see {@link #chooseTargets}. */
+  void setPlacementOnly() {
+    placementOnly = true;
+  }
+
   @Override
   void chooseTargets(BlockPlacementPolicy blockplacement,
       BlockStoragePolicySuite storagePolicySuite,
@@ -69,14 +80,61 @@ class ErasureCodingWork extends BlockReconstructionWork {
     // BlockCommand.NO_ACK (LONG.MAX_VALUE) . This kind of block we don't need
     // to send for replication or reconstruction
     if (!getBlock().isDeleted()) {
+      // When only placement needs fixing, first try domains with room for a
+      // moved internal block, so each relieving copy can later become a move
+      // rather than permanent over-replication.
+      final Set<Node> excluded = placementOnly
+          ? excludeDomainsWithoutRoom(blockplacement, excludedNodes)
+          : excludedNodes;
       chosenTargets = blockplacement.chooseTarget(
           getSrcPath(), getAdditionalReplRequired(), getSrcNodes()[0],
-          getLiveReplicaStorages(), false, excludedNodes, getBlockSize(),
+          getLiveReplicaStorages(), false, excluded, getBlockSize(),
           storagePolicySuite.getPolicy(getStoragePolicyID()), null);
+      if ((chosenTargets == null || chosenTargets.length == 0)
+          && excluded != excludedNodes) {
+        // No domain has room: relieving the placement still comes first.
+        chosenTargets = blockplacement.chooseTarget(
+            getSrcPath(), getAdditionalReplRequired(), getSrcNodes()[0],
+            getLiveReplicaStorages(), false, excludedNodes, getBlockSize(),
+            storagePolicySuite.getPolicy(getStoragePolicyID()), null);
+      }
     } else {
       LOG.warn("ErasureCodingWork could not need choose targets for {}", getBlock());
     }
     setTargets(chosenTargets);
+  }
+
+  /**
+   * {@code excludedNodes} plus every node in a failure domain that already
+   * holds the maximum number of internal blocks that exist nowhere else. A
+   * copy relieving another domain can never become the only copy there.
+   */
+  private Set<Node> excludeDomainsWithoutRoom(
+      BlockPlacementPolicy blockplacement, Set<Node> excludedNodes) {
+    final BlockPlacementPolicyErasureCoding policy =
+        (BlockPlacementPolicyErasureCoding) blockplacement;
+    if (policy.clusterMap == null) {
+      return excludedNodes;
+    }
+    final BlockInfoStriped stripedBlk = (BlockInfoStriped) getBlock();
+    final List<DatanodeStorageInfo> live = getLiveReplicaStorages();
+    final String[] domains = new String[live.size()];
+    final byte[] indices = new byte[live.size()];
+    for (int i = 0; i < live.size(); i++) {
+      domains[i] = live.get(i).getDatanodeDescriptor().getNetworkLocation();
+      indices[i] = (byte) stripedBlk.getStorageBlockIndex(live.get(i));
+    }
+    final Set<String> full = policy.domainsWithoutSpareCapacity(domains,
+        indices, stripedBlk.getRealTotalBlockNum(),
+        stripedBlk.getParityBlockNum());
+    if (full.isEmpty()) {
+      return excludedNodes;
+    }
+    final Set<Node> excluded = new HashSet<>(excludedNodes);
+    for (String domain : full) {
+      excluded.addAll(policy.clusterMap.getDatanodesInRack(domain));
+    }
+    return excluded;
   }
 
   /**
@@ -123,9 +181,14 @@ class ErasureCodingWork extends BlockReconstructionWork {
    *   <li>Otherwise, if the target's domain holds no copy of the group yet, any
    *   internal block, since the copy adds a domain to the group.</li>
    * </ol>
-   * Targets in domains the group does not occupy yet are filled first, so the
-   * copies that relieve a domain also extend the group's spread. A target for
-   * which no copy improves placement is left unused.
+   * Targets in domains with room come first: a domain has room while it holds
+   * fewer sole-copy internal blocks than the budget, counting the ones it is
+   * about to receive. A relieving copy in such a domain can later become the
+   * only copy (the excess handling reclaims the original), so the copy is
+   * really a move; a copy into a domain without room can never be, and stays
+   * as over-replication. Among targets with room, domains the group does not
+   * occupy yet come first, so the copies also extend the group's spread. A
+   * target for which no copy improves placement is left unused.
    *
    * @return the targets that were given a copy
    */
@@ -147,25 +210,31 @@ class ErasureCodingWork extends BlockReconstructionWork {
           .add(storage.getDatanodeDescriptor().getNetworkLocation());
     }
 
-    List<DatanodeStorageInfo> ordered = new ArrayList<>(targets.length);
-    List<DatanodeStorageInfo> occupiedDomainTargets = new ArrayList<>();
-    Set<String> occupied = occupiedDomains(domainsPerIndex);
-    for (DatanodeStorageInfo target : targets) {
-      if (occupied.contains(
-          target.getDatanodeDescriptor().getNetworkLocation())) {
-        occupiedDomainTargets.add(target);
-      } else {
-        ordered.add(target);
-      }
-    }
-    ordered.addAll(occupiedDomainTargets);
-
+    // Sole-copy internal blocks each domain will hold once the originals of
+    // the relieving copies made here are reclaimed.
+    final Map<String, Integer> projected =
+        soleCopiesPerDomain(domainsPerIndex);
+    final List<DatanodeStorageInfo> remaining =
+        new ArrayList<>(Arrays.asList(targets));
     List<DatanodeStorageInfo> used = new ArrayList<>(targets.length);
-    for (DatanodeStorageInfo target : ordered) {
+    while (!remaining.isEmpty()) {
+      final Set<String> occupied = occupiedDomains(domainsPerIndex);
+      DatanodeStorageInfo target = remaining.get(0);
+      int targetRank = Integer.MAX_VALUE;
+      for (DatanodeStorageInfo candidate : remaining) {
+        final String domain =
+            candidate.getDatanodeDescriptor().getNetworkLocation();
+        final int rank = (projected.getOrDefault(domain, 0) < budget ? 0 : 2)
+            + (occupied.contains(domain) ? 1 : 0);
+        if (rank < targetRank) {
+          targetRank = rank;
+          target = candidate;
+        }
+      }
+      remaining.remove(target);
       final String targetDomain =
           target.getDatanodeDescriptor().getNetworkLocation();
-      final boolean newDomain =
-          !occupiedDomains(domainsPerIndex).contains(targetDomain);
+      final boolean newDomain = !occupied.contains(targetDomain);
       final Map<String, Integer> soleCopies = soleCopiesPerDomain(
           domainsPerIndex);
 
@@ -203,6 +272,11 @@ class ErasureCodingWork extends BlockReconstructionWork {
       }
       createReplicationWork(bestSource, target);
       used.add(target);
+      if (bestScore > 1) {
+        // The copy relieves an over-budget domain, so once the original is
+        // reclaimed the target's domain holds this internal block alone.
+        projected.merge(targetDomain, 1, Integer::sum);
+      }
       domainsPerIndex.computeIfAbsent(liveBlockIndices[bestSource],
           k -> new HashSet<>()).add(targetDomain);
     }

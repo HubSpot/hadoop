@@ -214,6 +214,33 @@ public class TestErasureCodingWorkPlacement {
   }
 
   /**
+   * /a is full (3 sole copies), /b is over budget by 3, /c holds nothing. The
+   * relieving copies must all go to /c, which has room for exactly three moved
+   * internal blocks, even though /a targets are offered first. Copies into /a
+   * could never become moves and would stay as permanent over-replication.
+   */
+  @Test
+  public void testRelievingCopiesPreferDomainsWithRoom() {
+    placeLive("/a", 0, 1, 2);
+    placeLive("/b", 3, 4, 5, 6, 7, 8);
+
+    DatanodeStorageInfo[] chosen = targets("/a", "/a", "/c", "/c", "/c");
+    ErasureCodingWork work = newWork(
+        mock(BlockPlacementPolicyErasureCoding.class), chosen);
+    work.addTaskToDatanode(new NumberReplicas());
+
+    List<Object[]> copies = scheduledCopies();
+    assertEquals(3, copies.size());
+    for (Object[] copy : copies) {
+      assertEquals("/c", ((DatanodeStorageInfo) copy[1])
+          .getDatanodeDescriptor().getNetworkLocation());
+      byte index = (Byte) copy[0];
+      assertTrue("copy " + index + " should come out of /b", index >= 3);
+    }
+    assertTrue(placementAfter(copies).isPlacementPolicySatisfied());
+  }
+
+  /**
    * A target that cannot improve placement (its domain is already occupied and
    * no other domain is over budget once earlier copies are counted) is left
    * unused, so pending reconstruction does not wait for a copy that was never

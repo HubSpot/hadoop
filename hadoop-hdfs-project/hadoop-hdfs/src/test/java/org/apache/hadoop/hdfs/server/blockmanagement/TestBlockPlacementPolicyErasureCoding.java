@@ -22,7 +22,10 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
@@ -81,6 +84,37 @@ public class TestBlockPlacementPolicyErasureCoding {
         indices.add((byte) -1);
       }
       return this;
+    }
+
+    String[] domains() {
+      String[] d = new String[locs.size()];
+      for (int i = 0; i < d.length; i++) {
+        d[i] = locs.get(i).getNetworkLocation();
+      }
+      return d;
+    }
+
+    byte[] indices() {
+      byte[] idx = new byte[indices.size()];
+      for (int i = 0; i < idx.length; i++) {
+        idx[i] = indices.get(i);
+      }
+      return idx;
+    }
+
+    /** Positions of the copies of internal block {@code index}. */
+    int[] copiesOf(int index) {
+      List<Integer> positions = new ArrayList<>();
+      for (int i = 0; i < indices.size(); i++) {
+        if (indices.get(i) == index) {
+          positions.add(i);
+        }
+      }
+      int[] p = new int[positions.size()];
+      for (int i = 0; i < p.length; i++) {
+        p[i] = positions.get(i);
+      }
+      return p;
     }
 
     BlockPlacementStatusErasureCoding verify(int totalInternalBlocks,
@@ -293,5 +327,204 @@ public class TestBlockPlacementPolicyErasureCoding {
         locs.toArray(new DatanodeInfo[0]), idx, DATA_UNITS + PARITY_UNITS,
         PARITY_UNITS);
     assertTrue(status.isPlacementPolicySatisfied());
+  }
+
+  private static final int TOTAL = DATA_UNITS + PARITY_UNITS;
+  private static final List<String> RACKS = Arrays.asList("/a", "/b", "/c");
+
+  private int[] reclaim(Placement p, int index, long... keepPreference) {
+    int[] copies = p.copiesOf(index);
+    long[] pref = keepPreference.length == copies.length ? keepPreference
+        : new long[copies.length];
+    return policy.chooseCopiesToReclaim(p.domains(), p.indices(), copies,
+        pref, TOTAL, PARITY_UNITS);
+  }
+
+  /**
+   * After a copy of index 7 lands in /a, its two old copies in /b and /c can
+   * only be reclaimed together: removing either alone is safe, but the policy
+   * must find that removing both is too.
+   */
+  @Test
+  public void testReclaimFindsTheLargestSafeSet() {
+    Placement p = new Placement()
+        .on("/a", 0, 4, 7)
+        .on("/b", 1, 2, 6, 7)
+        .on("/c", 3, 5, 8, 7);
+    int[] removed = reclaim(p, 7);
+    assertEquals(2, removed.length);
+    for (int position : removed) {
+      assertTrue("the /a copy must be kept",
+          !p.domains()[position].equals("/a"));
+    }
+  }
+
+  @Test
+  public void testReclaimKeepsTheMostPreferredAmongEqualChoices() {
+    // Index 4 duplicated within /b protects nothing; either copy can go.
+    Placement p = new Placement()
+        .on("/a", 0, 1, 2)
+        .on("/b", 3, 4, 5, 4)
+        .on("/c", 6, 7, 8);
+    int[] copies = p.copiesOf(4);
+    int[] removed = reclaim(p, 4, 100, 5);
+    assertEquals(1, removed.length);
+    assertEquals("the less preferred copy goes", copies[1], removed[0]);
+    removed = reclaim(p, 4, 5, 100);
+    assertEquals(copies[0], removed[0]);
+  }
+
+  @Test
+  public void testReclaimKeepsProtectiveCopies() {
+    // fsck group 0: index 7 in /b and /c, both at their budget.
+    Placement p = new Placement()
+        .on("/a", 0, 4)
+        .on("/b", 1, 2, 6, 7)
+        .on("/c", 3, 5, 8, 7);
+    assertEquals(0, reclaim(p, 7).length);
+  }
+
+  @Test
+  public void testReclaimNeverRemovesEveryCopy() {
+    // In a single-rack cluster every removal is "safe"; one copy must stay.
+    NetworkTopology singleRack = new NetworkTopology();
+    BlockPlacementPolicyErasureCoding singleRackPolicy =
+        new BlockPlacementPolicyErasureCoding();
+    singleRackPolicy.clusterMap = singleRack;
+    String[] domains = new String[TOTAL + 2];
+    byte[] indices = new byte[TOTAL + 2];
+    for (int i = 0; i < TOTAL; i++) {
+      domains[i] = "/only";
+      indices[i] = (byte) i;
+    }
+    domains[TOTAL] = "/only";
+    indices[TOTAL] = 2;
+    domains[TOTAL + 1] = "/only";
+    indices[TOTAL + 1] = 2;
+    int[] removed = singleRackPolicy.chooseCopiesToReclaim(domains, indices,
+        new int[] {2, TOTAL, TOTAL + 1}, new long[3], TOTAL, PARITY_UNITS);
+    assertEquals(2, removed.length);
+  }
+
+  @Test
+  public void testReclaimDeclinesToSearchTooManyCopies() {
+    Placement p = new Placement().on("/a", 0, 1, 2).on("/b", 3, 4, 5)
+        .on("/c", 6, 7, 8);
+    for (int i = 0; i < BlockPlacementPolicyErasureCoding.MAX_COPIES_SEARCHED;
+         i++) {
+      p.on(RACKS.get(i % 3), 0);
+    }
+    assertEquals(null, reclaim(p, 0));
+  }
+
+  /**
+   * fsck group 0: index 7 duplicated across /b and /c, both at their budget,
+   * while /a holds only two sole copies. Copying 7 into /a lets both old copies
+   * go: one fewer copy overall, ending 3/3/3.
+   */
+  @Test
+  public void testConsolidationMovesTheSharedIndexToTheRoomyDomain() {
+    Placement p = new Placement()
+        .on("/a", 0, 4)
+        .on("/b", 1, 2, 6, 7)
+        .on("/c", 3, 5, 8, 7);
+    BlockPlacementPolicyErasureCoding.Consolidation plan =
+        policy.planConsolidation(p.domains(), p.indices(), RACKS, TOTAL,
+            PARITY_UNITS);
+    assertEquals(7, plan.getIndex());
+    assertEquals("/a", plan.getDomain());
+    assertEquals(1, plan.getNetReclaimed());
+  }
+
+  /**
+   * fsck group 30 (11 copies): indices 3 and 6 are each shared by /b and /c,
+   * and /a holds a single sole copy. Two consolidations each reclaim one net
+   * copy and the group ends at 9.
+   */
+  @Test
+  public void testConsolidationRepeatsUntilNothingIsLeft() {
+    Placement p = new Placement()
+        .on("/a", 4)
+        .on("/b", 1, 3, 5, 6, 8)
+        .on("/c", 0, 7, 2, 3, 6);
+    int copies = p.indices().length;
+    for (int step = 0; step < 5; step++) {
+      BlockPlacementPolicyErasureCoding.Consolidation plan =
+          policy.planConsolidation(p.domains(), p.indices(), RACKS, TOTAL,
+              PARITY_UNITS);
+      if (plan == null) {
+        break;
+      }
+      // Apply the plan as the cluster would: add the copy, then reclaim.
+      BlockPlacementStatusErasureCoding before = p.verify(TOTAL, PARITY_UNITS);
+      p.on(plan.getDomain(), plan.getIndex());
+      int[] removed = reclaim(p, plan.getIndex());
+      p = without(p, removed);
+      assertFalse(p.verify(TOTAL, PARITY_UNITS).isLessSafeThan(before));
+      assertEquals(copies - plan.getNetReclaimed(), p.indices().length);
+      copies = p.indices().length;
+    }
+    assertEquals(TOTAL, copies);
+    assertTrue(p.verify(TOTAL, PARITY_UNITS).isPlacementPolicySatisfied());
+  }
+
+  private Placement without(Placement p, int[] removed) {
+    Set<Integer> gone = new HashSet<>();
+    for (int r : removed) {
+      gone.add(r);
+    }
+    Placement q = new Placement();
+    String[] d = p.domains();
+    byte[] x = p.indices();
+    for (int i = 0; i < d.length; i++) {
+      if (!gone.contains(i)) {
+        q.on(d[i], x[i]);
+      }
+    }
+    return q;
+  }
+
+  @Test
+  public void testNoConsolidationWhenEveryDomainIsFull() {
+    // Two racks, RS-6-3: each must keep 3 shared indices; nothing to gain.
+    Placement p = new Placement()
+        .on("/a", 0, 1, 2, 3, 4, 5)
+        .on("/b", 3, 4, 5, 6, 7, 8);
+    assertEquals(null, policy.planConsolidation(p.domains(), p.indices(),
+        Arrays.asList("/a", "/b"), TOTAL, PARITY_UNITS));
+  }
+
+  @Test
+  public void testNoConsolidationWhileAnythingIsReclaimable() {
+    // fsck group 16: the /b copy of index 1 can simply be reclaimed; that must
+    // happen first.
+    Placement p = new Placement()
+        .on("/a", 6, 7)
+        .on("/b", 0, 1, 2, 5, 8)
+        .on("/c", 1, 3, 4, 5);
+    assertEquals(null, policy.planConsolidation(p.domains(), p.indices(),
+        RACKS, TOTAL, PARITY_UNITS));
+  }
+
+  @Test
+  public void testNoConsolidationWhenUnsafe() {
+    Placement p = new Placement()
+        .on("/a", 0)
+        .on("/b", 1, 2, 3, 4, 5, 6, 7)
+        .on("/c", 8, 7);
+    assertFalse(p.verify(TOTAL, PARITY_UNITS).isPlacementPolicySatisfied());
+    assertEquals(null, policy.planConsolidation(p.domains(), p.indices(),
+        RACKS, TOTAL, PARITY_UNITS));
+  }
+
+  @Test
+  public void testDomainsWithoutSpareCapacity() {
+    Placement p = new Placement()
+        .on("/a", 0, 4)
+        .on("/b", 1, 2, 6, 7)
+        .on("/c", 3, 5, 8, 7);
+    assertEquals(new HashSet<>(Arrays.asList("/b", "/c")),
+        policy.domainsWithoutSpareCapacity(p.domains(), p.indices(), TOTAL,
+            PARITY_UNITS));
   }
 }

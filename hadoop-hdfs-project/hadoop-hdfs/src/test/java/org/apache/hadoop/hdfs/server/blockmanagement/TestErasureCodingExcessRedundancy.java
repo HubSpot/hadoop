@@ -19,6 +19,7 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -130,6 +131,7 @@ public class TestErasureCodingExcessRedundancy {
     DatanodeStorageInfo storage = DFSTestUtil.createDatanodeStorageInfo(
         "s" + nextHost, ip, rack, "host" + nextHost);
     DatanodeDescriptor dn = storage.getDatanodeDescriptor();
+    dn.setAlive(true);
     topology.add(dn);
     dn.getStorageInfos()[0].setUtilizationForTesting(CAPACITY, 0L, CAPACITY,
         0L);
@@ -454,12 +456,13 @@ public class TestErasureCodingExcessRedundancy {
   }
 
   /**
-   * Index 5 has a copy in every rack. Removing any single copy is safe, but
-   * after one is removed the remaining two each protect a rack at its budget.
-   * Safety must be re-checked after every removal, not decided once up front.
+   * Index 5 has a copy in every rack. Removing any one is safe; removing two
+   * is safe only if the copy kept is in /rack1, the one rack with room for
+   * another sole copy. The whole set must be chosen together (keeping on1,
+   * though it is on the fullest node), not one copy at a time by free space.
    */
   @Test
-  public void testSafetyIsRecheckedAfterEachRemoval() {
+  public void testReclaimsTheLargestSafeSetOfCopies() {
     List<Copy> copies = new ArrayList<>();
     copies.addAll(place("/rack0", 0, 1, 2));
     copies.addAll(place("/rack1", 3, 4));
@@ -476,12 +479,99 @@ public class TestErasureCodingExcessRedundancy {
     setRemaining(on0.node, CAPACITY / 10);
     BlockInfoStriped sblk = newGroup(RS_6_3, 6, copies);
 
-    List<Copy> after = reclaimAndVerify(sblk, "recheck");
-    assertEquals(10, after.size());
-    assertTrue(bm.isExcess(on1.node, sblk));
-    assertFalse(bm.isExcess(on0.node, sblk));
-    assertFalse(bm.isExcess(on2.node, sblk));
+    List<Copy> after = reclaimAndVerify(sblk, "largest set");
+    assertEquals(9, after.size());
+    assertFalse(bm.isExcess(on1.node, sblk));
+    assertTrue(bm.isExcess(on0.node, sblk));
+    assertTrue(bm.isExcess(on2.node, sblk));
     assertTrue(status(sblk, after).isPlacementPolicySatisfied());
+  }
+
+  /**
+   * The production layout after relief (see
+   * {@link #testReclaimsOriginalsWhenReliefCopiesAreOnFullerNodes}) settles at
+   * 10 copies with index 5 shared by /rack1 and /rack2, both at budget, while
+   * /rack0 has room. The group must be queued for consolidation, and applying
+   * the planned copy must let excess handling bring it to 9 safely.
+   */
+  @Test
+  public void testStuckGroupIsQueuedAndConsolidates() {
+    List<Copy> copies = new ArrayList<>();
+    copies.addAll(place("/rack2", 0, 1));
+    copies.addAll(place("/rack1", 2, 3, 4, 5, 6, 7, 8));
+    copies.add(new Copy(inService.get("/rack0").get(10), 2));
+    copies.add(new Copy(inService.get("/rack0").get(11), 3));
+    copies.add(new Copy(inService.get("/rack2").get(10), 4));
+    copies.add(new Copy(inService.get("/rack2").get(11), 5));
+    BlockInfoStriped sblk = newGroup(RS_6_3, 6, copies);
+
+    assertEquals(10, reclaimAndVerify(sblk, "relieved").size());
+    assertTrue("a stuck group should be queued for consolidation",
+        bm.isQueuedForEcConsolidation(sblk));
+    assertEquals(9, consolidateAndVerify(sblk, "consolidate").size());
+    assertNull("nothing left to consolidate", planFor(sblk));
+  }
+
+  private BlockPlacementPolicyErasureCoding.Consolidation planFor(
+      BlockInfoStriped sblk) {
+    List<Copy> live = liveCopies(sblk);
+    String[] domains = new String[live.size()];
+    byte[] indices = new byte[live.size()];
+    for (int i = 0; i < live.size(); i++) {
+      domains[i] = live.get(i).rack();
+      indices[i] = (byte) live.get(i).index;
+    }
+    return policy.planConsolidation(domains, indices, inService.keySet(),
+        sblk.getRealTotalBlockNum(), sblk.getParityBlockNum());
+  }
+
+  /**
+   * Repeatedly apply the planned consolidation the way the cluster would (a
+   * copy lands on a free node in the planned domain, then excess handling
+   * runs), checking every invariant at each step and that each step reclaims
+   * what was planned without ever reclaiming the new copy. Stops when nothing
+   * is planned or no node in the planned domain is free.
+   */
+  private List<Copy> consolidateAndVerify(BlockInfoStriped sblk,
+      String context) {
+    List<Copy> current = liveCopies(sblk);
+    for (int step = 0; step < 4 * sblk.getTotalBlockNum(); step++) {
+      BlockPlacementPolicyErasureCoding.Consolidation plan = planFor(sblk);
+      if (plan == null) {
+        return current;
+      }
+      DatanodeDescriptor target = freeNode(sblk, plan.getDomain());
+      if (target == null) {
+        return current;
+      }
+      target.getStorageInfos()[0].addBlock(sblk,
+          new Block(sblk.getBlockId() + plan.getIndex(), 0, 1));
+      List<Copy> after = reclaimAndVerify(sblk,
+          context + " step=" + step + " " + plan);
+      // At least what was planned: the new copy can also let other internal
+      // blocks' copies go (e.g. by keeping a domain occupied). Strictly
+      // fewer copies each step is what guarantees this terminates.
+      assertTrue(context + " " + plan + " should reclaim at least as planned;"
+              + " before=" + current + " after=" + after,
+          after.size() <= current.size() - plan.getNetReclaimed());
+      current = after;
+    }
+    fail(context + " consolidation did not converge: " + current);
+    return current;
+  }
+
+  /** An in-service node in {@code rack} holding nothing of {@code sblk}. */
+  private DatanodeDescriptor freeNode(BlockInfoStriped sblk, String rack) {
+    Set<DatanodeDescriptor> holding = new HashSet<>();
+    for (DatanodeStorageInfo s : bm.blocksMap.getStorages(sblk)) {
+      holding.add(s.getDatanodeDescriptor());
+    }
+    for (DatanodeDescriptor dn : inService.get(rack)) {
+      if (!holding.contains(dn)) {
+        return dn;
+      }
+    }
+    return null;
   }
 
   /** A partial last block group (fewer data blocks than the schema). */
@@ -519,6 +609,8 @@ public class TestErasureCodingExcessRedundancy {
         new ArrayList<>(SystemErasureCodingPolicies.getPolicies());
     int groupsReclaimed = 0;
     int copiesReclaimed = 0;
+    int groupsConsolidated = 0;
+    int copiesConsolidated = 0;
 
     for (int numRacks = 2; numRacks <= 5; numRacks++) {
       newCluster(numRacks, 45, 4);
@@ -586,14 +678,174 @@ public class TestErasureCodingExcessRedundancy {
           groupsReclaimed++;
           copiesReclaimed += before - after;
         }
+
+        // A group the excess handling leaves with a planned consolidation
+        // must have been queued for it, unless it has replicas the planner
+        // must not act around (here, copies on decommissioning nodes).
+        boolean settled = true;
+        for (Copy copy : copies) {
+          settled &= copy.node.isInService();
+        }
+        if (settled && planFor(sblk) != null) {
+          assertTrue(context + " should be queued for consolidation",
+              bm.isQueuedForEcConsolidation(sblk));
+        }
+        int consolidated;
+        try {
+          consolidated = consolidateAndVerify(sblk, context).size();
+        } catch (IllegalStateException | IllegalArgumentException e) {
+          throw new AssertionError(context + " layout=" + copies, e);
+        }
+        if (consolidated < after) {
+          groupsConsolidated++;
+          copiesConsolidated += after - consolidated;
+        }
       }
+    }
+    if (groupsConsolidated == 0) {
+      fail("no layout exercised consolidation; seed=" + seed);
     }
     // Make sure the generator actually exercised reclaiming.
     if (groupsReclaimed == 0) {
       fail("no layout exercised reclaiming; seed=" + seed);
     }
-    System.out.println("TestErasureCodingExcessRedundancy seed=" + seed
+    System.out.println("TestErasureCodingExcessRedundancy randomized seed=" + seed
         + " groupsReclaimed=" + groupsReclaimed + " copiesReclaimed="
-        + copiesReclaimed);
+        + copiesReclaimed + " groupsConsolidated=" + groupsConsolidated
+        + " copiesConsolidated=" + copiesConsolidated);
+  }
+
+  /**
+   * Randomized, aimed at the layouts consolidation exists for: a safely
+   * placed group (one copy per internal block, no domain over its budget)
+   * plus extra copies of random internal blocks scattered into other domains,
+   * as relief copies landing in full domains leave behind. Reclaiming and
+   * then consolidating must keep every invariant at every step, never reclaim
+   * a consolidating copy, and end with nothing left to consolidate.
+   */
+  @Test(timeout = 600000)
+  public void testRandomizedConsolidationNeverLosesDurability()
+      throws IOException {
+    final long seed = Long.getLong("ec.excess.seed", System.nanoTime());
+    final int trialsPerShape = Integer.getInteger("ec.excess.trials", 750);
+    final Random random = new Random(seed);
+    final List<ErasureCodingPolicy> schemas =
+        new ArrayList<>(SystemErasureCodingPolicies.getPolicies());
+    int groupsConsolidated = 0;
+    int copiesConsolidated = 0;
+
+    for (int numRacks = 3; numRacks <= 5; numRacks++) {
+      newCluster(numRacks, 45, 0);
+      List<String> racks = new ArrayList<>(inService.keySet());
+      for (int trial = 0; trial < trialsPerShape; trial++) {
+        ErasureCodingPolicy ec = schemas.get(random.nextInt(schemas.size()));
+        int data = ec.getNumDataUnits();
+        int parity = ec.getNumParityUnits();
+        int realData = random.nextInt(4) == 0 ? 1 + random.nextInt(data) : data;
+        List<Integer> groupIndices = new ArrayList<>();
+        for (int i = 0; i < realData; i++) {
+          groupIndices.add(i);
+        }
+        for (int i = data; i < data + parity; i++) {
+          groupIndices.add(i);
+        }
+        Collections.shuffle(groupIndices, random);
+
+        Map<String, List<DatanodeDescriptor>> free = new HashMap<>();
+        for (String rack : racks) {
+          List<DatanodeDescriptor> nodes = new ArrayList<>(inService.get(rack));
+          Collections.shuffle(nodes, random);
+          free.put(rack, nodes);
+          for (DatanodeDescriptor dn : inService.get(rack)) {
+            setRemaining(dn, 1 + (long) (random.nextDouble() * (CAPACITY - 1)));
+          }
+        }
+        // One copy of each internal block, skewed toward one domain so it is
+        // often over its budget, as after losing or draining a domain.
+        Map<Integer, Set<String>> held = new HashMap<>();
+        List<Copy> copies = new ArrayList<>();
+        String hot = racks.get(random.nextInt(racks.size()));
+        double hotBias = 0.3 + 0.5 * random.nextDouble();
+        for (int index : groupIndices) {
+          String rack = random.nextDouble() < hotBias ? hot
+              : racks.get(random.nextInt(racks.size()));
+          copies.add(new Copy(free.get(rack).remove(0), index));
+          held.computeIfAbsent(index, k -> new HashSet<>()).add(rack);
+        }
+        // Relieve it the way placement-blind relief did: copy a sole-copy
+        // internal block of the most over-budget domain into a random other
+        // domain, full or not, until the group is safe.
+        for (int step = 0; step < 4 * groupIndices.size(); step++) {
+          Map<String, List<Integer>> sole = new HashMap<>();
+          for (Map.Entry<Integer, Set<String>> e : held.entrySet()) {
+            if (e.getValue().size() == 1) {
+              sole.computeIfAbsent(e.getValue().iterator().next(),
+                  k -> new ArrayList<>()).add(e.getKey());
+            }
+          }
+          String worst = null;
+          for (Map.Entry<String, List<Integer>> e : sole.entrySet()) {
+            if (e.getValue().size() > parity && (worst == null
+                || e.getValue().size() > sole.get(worst).size())) {
+              worst = e.getKey();
+            }
+          }
+          if (worst == null) {
+            break;
+          }
+          List<Integer> candidates = sole.get(worst);
+          int index = candidates.get(random.nextInt(candidates.size()));
+          List<String> others = new ArrayList<>(racks);
+          others.remove(worst);
+          String rack = others.get(random.nextInt(others.size()));
+          held.get(index).add(rack);
+          copies.add(new Copy(free.get(rack).remove(0), index));
+        }
+        // Occasionally an extra copy anywhere.
+        if (random.nextInt(3) == 0) {
+          int index = groupIndices.get(random.nextInt(groupIndices.size()));
+          String rack = racks.get(random.nextInt(racks.size()));
+          if (held.get(index).add(rack)) {
+            copies.add(new Copy(free.get(rack).remove(0), index));
+          }
+        }
+
+        BlockInfoStriped sblk = newGroup(ec, realData, copies);
+        String context = "seed=" + seed + " racks=" + numRacks + " trial="
+            + trial + " ec=" + ec.getName() + " realData=" + realData;
+        try {
+          int reclaimed = reclaimAndVerify(sblk, context).size();
+          if (planFor(sblk) != null) {
+            assertTrue(context + " should be queued for consolidation",
+                bm.isQueuedForEcConsolidation(sblk));
+          }
+          int consolidated = consolidateAndVerify(sblk, context).size();
+          if (consolidated < reclaimed) {
+            groupsConsolidated++;
+            copiesConsolidated += reclaimed - consolidated;
+          }
+          assertNull(context + " left something to consolidate",
+              freeNodesEverywhere(sblk) ? planFor(sblk) : null);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+          throw new AssertionError(context + " layout=" + copies, e);
+        }
+      }
+    }
+    if (groupsConsolidated < trialsPerShape / 10) {
+      fail("too few layouts exercised consolidation (" + groupsConsolidated
+          + "); seed=" + seed);
+    }
+    System.out.println("TestErasureCodingExcessRedundancy consolidation seed="
+        + seed + " groupsConsolidated=" + groupsConsolidated
+        + " copiesConsolidated=" + copiesConsolidated);
+  }
+
+  private boolean freeNodesEverywhere(BlockInfoStriped sblk) {
+    for (String rack : inService.keySet()) {
+      if (freeNode(sblk, rack) == null) {
+        return false;
+      }
+    }
+    return true;
   }
 }

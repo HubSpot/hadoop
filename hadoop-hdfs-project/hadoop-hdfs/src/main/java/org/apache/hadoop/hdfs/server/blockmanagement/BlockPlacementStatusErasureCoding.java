@@ -132,6 +132,13 @@ public class BlockPlacementStatusErasureCoding implements BlockPlacementStatus {
   }
 
   /**
+   * The number of internal blocks whose only copies are within {@code domain}.
+   */
+  public int getSoleCopies(String domain) {
+    return soleCopiesPerDomain.getOrDefault(domain, 0);
+  }
+
+  /**
    * The number of additional failure domains the group still has to occupy to
    * satisfy the rack-spreading requirement.
    */
