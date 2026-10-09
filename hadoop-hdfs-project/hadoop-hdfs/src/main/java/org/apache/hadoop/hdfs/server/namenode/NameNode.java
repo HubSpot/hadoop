@@ -212,7 +212,6 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_GC_TIME_MONITOR_
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_GC_TIME_MONITOR_ENABLE;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_GC_TIME_MONITOR_ENABLE_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY;
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_AVOID_SLOW_DATANODE_FOR_READ_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_AVOID_SLOW_DATANODE_FOR_READ_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_BLOCKPLACEMENTPOLICY_EXCLUDE_SLOW_NODES_ENABLED_KEY;
@@ -366,7 +365,6 @@ public class NameNode extends ReconfigurableBase implements
           DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_KEY,
           DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION,
           DFS_BLOCK_REPLICATOR_CLASSNAME_KEY,
-          DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY,
           DFS_IMAGE_PARALLEL_LOAD_KEY,
           DFS_NAMENODE_AVOID_SLOW_DATANODE_FOR_READ_KEY,
           DFS_NAMENODE_BLOCKPLACEMENTPOLICY_EXCLUDE_SLOW_NODES_ENABLED_KEY,
@@ -2358,8 +2356,7 @@ public class NameNode extends ReconfigurableBase implements
             DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION)
         || property.equals(DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY)) {
       return reconfReplicationParameters(newVal, property);
-    } else if (property.equals(DFS_BLOCK_REPLICATOR_CLASSNAME_KEY) || property
-        .equals(DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY)) {
+    } else if (property.equals(DFS_BLOCK_REPLICATOR_CLASSNAME_KEY)) {
       reconfBlockPlacementPolicy();
       return newVal;
     } else if (property.equals(DFS_IMAGE_PARALLEL_LOAD_KEY)) {
