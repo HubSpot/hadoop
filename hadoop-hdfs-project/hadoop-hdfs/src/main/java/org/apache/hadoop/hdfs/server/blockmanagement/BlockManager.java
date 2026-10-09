@@ -28,6 +28,8 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SEND_QOP_ENABLED
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SEND_QOP_ENABLED_DEFAULT;
 import static org.apache.hadoop.hdfs.protocol.BlockType.CONTIGUOUS;
 import static org.apache.hadoop.hdfs.protocol.BlockType.STRIPED;
+import static org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyErasureCoding.domainsOf;
+import static org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyErasureCoding.indicesOf;
 import static org.apache.hadoop.hdfs.util.StripedBlockUtil.getInternalBlockLength;
 import static org.apache.hadoop.util.ExitUtil.terminate;
 import static org.apache.hadoop.util.Time.now;
@@ -4168,7 +4170,8 @@ public class BlockManager implements BlockStatsMXBean {
    * appropriate queues if necessary, and returns a result code indicating
    * what happened with it.
    */
-  private MisReplicationResult processMisReplicatedBlock(BlockInfo block) {
+  @VisibleForTesting
+  MisReplicationResult processMisReplicatedBlock(BlockInfo block) {
     if (block.isDeleted()) {
       // block does not belong to any file
       addToInvalidates(block);
@@ -4188,7 +4191,13 @@ public class BlockManager implements BlockStatsMXBean {
       if (neededReconstruction.add(block, numCurrentReplica,
           num.readOnlyReplicas(), num.outOfServiceReplicas(),
           expectedRedundancy)) {
-        return MisReplicationResult.UNDER_REPLICATED;
+        // An erasure-coded group over-concentrated on one failure domain can
+        // also hold duplicate internal blocks that protect nothing. Go on to
+        // reclaim those, so the reconstruction has room for its copy.
+        if (!block.isStriped()
+            || !shouldProcessExtraRedundancy(num, expectedRedundancy)) {
+          return MisReplicationResult.UNDER_REPLICATED;
+        }
       }
     }
 
@@ -4340,13 +4349,11 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   /**
-   * We want block group has every internal block, but we have redundant
-   * internal blocks (which have the same index).
-   * In this method, we delete the redundant internal blocks until only one
-   * left for each index.
-   *
-   * The block placement policy will make sure that the left internal blocks are
-   * spread across racks and also try hard to pick one with least free space.
+   * The block group has redundant internal blocks (several copies of the same
+   * index). Reclaim every redundant copy that does not protect the group's
+   * placement under {@link BlockPlacementPolicyErasureCoding}; copies that keep
+   * a failure domain within its loss budget, or keep the group spread across
+   * domains, are kept as intentional over-replication.
    */
   private void chooseExcessRedundancyStriped(BlockCollection bc,
       final Collection<DatanodeStorageInfo> nonExcess,
@@ -4377,12 +4384,23 @@ public class BlockManager implements BlockStatsMXBean {
       return;
     }
 
-    // use delNodeHint only if delNodeHint is duplicated
+    // BlockPlacementPolicyErasureCoding keeps extra copies of an internal block
+    // on purpose to keep every failure domain within its loss budget. Such a
+    // copy may only be reclaimed when removing it does not make the group less
+    // safe; redundant copies that protect no domain are still reclaimed so their
+    // capacity can be reused to fix a genuinely over-concentrated domain.
+    final BlockPlacementPolicyErasureCoding placementPolicy =
+        placementPolicies.getErasureCodingPolicy();
+
+    // use delNodeHint only if delNodeHint is duplicated and that copy is not
+    // protecting the group
     final DatanodeStorageInfo delStorageHint =
         DatanodeStorageInfo.getDatanodeStorageInfo(nonExcess, delNodeHint.getDatanode());
     if (delStorageHint != null) {
       Integer index = storage2index.get(delStorageHint);
-      if (index != null && duplicated.get(index)) {
+      if (index != null && duplicated.get(index)
+          && !removalWouldReduceSafety(sblk, nonExcess, delStorageHint,
+              placementPolicy)) {
         processChosenExcessRedundancy(nonExcess, delStorageHint, delNodeHint.getGracePeriod(), storedBlock);
         logEmptyExcessType = false;
       }
@@ -4402,7 +4420,6 @@ public class BlockManager implements BlockStatsMXBean {
       return;
     }
 
-    BlockPlacementPolicy placementPolicy = placementPolicies.getPolicy(STRIPED);
     // for each duplicated index, delete some replicas until only one left
     for (int targetIndex = duplicated.nextSetBit(0); targetIndex >= 0;
          targetIndex = duplicated.nextSetBit(targetIndex + 1)) {
@@ -4413,25 +4430,94 @@ public class BlockManager implements BlockStatsMXBean {
           candidates.add(storage);
         }
       }
-      if (candidates.size() > 1) {
-        List<DatanodeStorageInfo> replicasToDelete = placementPolicy
-            .chooseReplicasToDelete(nonExcess, candidates, (short) 1,
-                excessTypes, null, null);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Choose redundant EC replicas to delete from blk_{} which is located in {}",
-              sblk.getBlockId(), storage2index);
-          LOG.debug("Storages with candidate blocks to be deleted: {}", candidates);
-          LOG.debug("Storages with blocks to be deleted: {}", replicasToDelete);
-        }
-        Preconditions.checkArgument(candidates.containsAll(replicasToDelete),
-            "The EC replicas to be deleted are not in the candidate list");
-        for (DatanodeStorageInfo chosen : replicasToDelete) {
-          processChosenExcessRedundancy(nonExcess, chosen, delNodeHint.getGracePeriod(), storedBlock);
-          candidates.remove(chosen);
-        }
-      }
+      chooseExcessRedundancyStripedIndex(sblk, nonExcess, candidates,
+          excessTypes, placementPolicy, delNodeHint.getGracePeriod());
       duplicated.clear(targetIndex);
     }
+  }
+
+  /**
+   * Reclaim redundant copies of one internal block under {@link
+   * BlockPlacementPolicyErasureCoding}: copies are removed one at a time, each
+   * only if removing it does not leave the group less safe than it is now,
+   * preferring to keep the copies on the storages with the most free space.
+   * At least one copy is always kept.
+   * <p>
+   * Removing a copy can only make other copies more protective, never less,
+   * so one pass over the duplicated indices leaves no reclaimable copy behind.
+   */
+  private void chooseExcessRedundancyStripedIndex(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess,
+      List<DatanodeStorageInfo> candidates, List<StorageType> excessTypes,
+      BlockPlacementPolicyErasureCoding placementPolicy, long gracePeriodMs) {
+    while (candidates.size() > 1) {
+      List<DatanodeStorageInfo> reclaimable = new ArrayList<>();
+      for (DatanodeStorageInfo candidate : candidates) {
+        if (!removalWouldReduceSafety(sblk, nonExcess, candidate,
+            placementPolicy)) {
+          reclaimable.add(candidate);
+        }
+      }
+      if (reclaimable.isEmpty()) {
+        LOG.debug("Keeping {} copies of an internal block of {} on {}: each"
+            + " protects the group's placement", candidates.size(), sblk,
+            candidates);
+        return;
+      }
+      // Ask the policy to drop exactly one of the reclaimable copies.
+      List<DatanodeStorageInfo> chosen = placementPolicy.chooseReplicasToDelete(
+          nonExcess, reclaimable, reclaimable.size() - 1, excessTypes, null,
+          null);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Choose redundant EC replica of {} to delete among {}"
+            + " (reclaimable {}): {}", sblk, candidates, reclaimable, chosen);
+      }
+      if (chosen.isEmpty()) {
+        return;
+      }
+      Preconditions.checkState(chosen.size() == 1
+              && reclaimable.contains(chosen.get(0)),
+          "Expected one reclaimable EC replica to delete, got %s", chosen);
+      // Never drop the last copy of an internal block.
+      Preconditions.checkState(candidates.size() > 1,
+          "Refusing to delete the last copy of an internal block of %s", sblk);
+      processChosenExcessRedundancy(nonExcess, chosen.get(0), gracePeriodMs,
+          sblk);
+      candidates.remove(chosen.get(0));
+    }
+  }
+
+  /**
+   * Whether removing {@code excluded} from the group's live storages would make
+   * the erasure-coded placement less safe: the group would occupy fewer of the
+   * failure domains it should, or more internal blocks would be at risk of a
+   * single-domain loss. Only copies that actually protect the group are kept
+   * this way; a redundant copy that does not improve safety is still reclaimed
+   * so its capacity can be reused.
+   */
+  private boolean removalWouldReduceSafety(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
+      BlockPlacementPolicyErasureCoding placementPolicy) {
+    BlockPlacementStatusErasureCoding withCopy =
+        ecPlacementStatus(sblk, nonExcess, null, placementPolicy);
+    BlockPlacementStatusErasureCoding withoutCopy =
+        ecPlacementStatus(sblk, nonExcess, excluded, placementPolicy);
+    return withoutCopy.isLessSafeThan(withCopy);
+  }
+
+  /**
+   * The EC placement status of the group backed by {@code nonExcess},
+   * optionally ignoring the {@code excluded} storage.
+   */
+  private BlockPlacementStatusErasureCoding ecPlacementStatus(
+      BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
+      BlockPlacementPolicyErasureCoding placementPolicy) {
+    final List<DatanodeStorageInfo> storages = new ArrayList<>(nonExcess);
+    storages.remove(excluded);
+    return placementPolicy.verifyPlacement(domainsOf(storages),
+        indicesOf(sblk, storages), sblk.getRealTotalBlockNum(),
+        sblk.getParityBlockNum());
   }
 
   private void processChosenExcessRedundancy(
