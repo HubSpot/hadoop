@@ -23,6 +23,7 @@ import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.net.Node;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.List;
@@ -141,11 +142,15 @@ class ErasureCodingWork extends BlockReconstructionWork {
     assert targets.length > 0;
     BlockInfoStriped stripedBlk = (BlockInfoStriped) getBlock();
 
+    // Some branches below give work to only some of the chosen targets; the
+    // targets are trimmed to those so that pending reconstruction only waits
+    // for copies that were actually requested.
     if (hasNotEnoughRack()) {
       // if we already have all the internal blocks, but not enough racks,
       // we only need to replicate one internal block to a new rack
       int sourceIndex = chooseSource4SimpleReplication();
       createReplicationWork(sourceIndex, targets[0]);
+      setTargets(Arrays.copyOf(targets, 1));
     } else if ((numberReplicas.decommissioning() > 0 ||
         numberReplicas.liveEnteringMaintenanceReplicas() > 0) &&
         hasAllInternalBlocks()) {
@@ -155,6 +160,7 @@ class ErasureCodingWork extends BlockReconstructionWork {
       for (int i = 0; i < num; i++) {
         createReplicationWork(leavingServiceSources.get(i), targets[i]);
       }
+      setTargets(Arrays.copyOf(targets, num));
     } else {
       targets[0].getDatanodeDescriptor().addBlockToBeErasureCoded(
           new ExtendedBlock(blockPoolId, stripedBlk), getSrcNodes(), targets,

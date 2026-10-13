@@ -2437,6 +2437,13 @@ public class BlockManager implements BlockStatsMXBean {
 
     // Add block to the datanode's task list
     rw.addTaskToDatanode(numReplicas);
+    // The task may use only some of the chosen targets; only those are
+    // scheduled and awaited.
+    targets = rw.getTargets();
+    if (targets == null || targets.length == 0) {
+      rw.resetTargets();
+      return false;
+    }
     DatanodeStorageInfo.incrementBlocksScheduled(targets);
 
     // Move the block-replication into a "pending" state.
