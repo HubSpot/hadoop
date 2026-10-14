@@ -847,8 +847,8 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   @VisibleForTesting
-  public BlockPlacementPolicy getStriptedBlockPlacementPolicy() {
-    return placementPolicies.getPolicy(STRIPED);
+  public BlockPlacementPolicyErasureCoding getStriptedBlockPlacementPolicy() {
+    return placementPolicies.getErasureCodingPolicy();
   }
 
   public void refreshBlockPlacementPolicy(Configuration conf) {
@@ -5128,13 +5128,23 @@ public class BlockManager implements BlockStatsMXBean {
 
   BlockPlacementStatus getBlockPlacementStatus(BlockInfo storedBlock,
       DatanodeStorageInfo[] additionalStorage) {
+    final boolean striped = storedBlock.isStriped();
+    final BlockInfoStriped stripedBlock =
+        striped ? (BlockInfoStriped) storedBlock : null;
     List<DatanodeDescriptor> liveNodes = new ArrayList<>();
+    // For a striped block, the internal-block index each location holds, kept
+    // in step with liveNodes so the EC policy can reason about per-domain loss.
+    List<Byte> liveIndices = striped ? new ArrayList<>() : null;
     if (additionalStorage != null) {
       // additionalNodes, are potential new targets for the block. If there are
       // any passed, include them when checking the placement policy to see if
       // the policy is met, when it may not have been met without these nodes.
       for (DatanodeStorageInfo s : additionalStorage) {
         liveNodes.add(getDatanodeDescriptorFromStorage(s));
+        if (striped) {
+          liveIndices.add(
+              BlockPlacementPolicyErasureCoding.PROPOSED_TARGET_INDEX);
+        }
       }
     }
     Collection<DatanodeDescriptor> corruptNodes = corruptReplicas
@@ -5167,15 +5177,23 @@ public class BlockManager implements BlockStatsMXBean {
       if (!cur.isDecommissionInProgress() && !cur.isDecommissioned()
           && ((corruptNodes == null) || !corruptNodes.contains(cur))) {
         liveNodes.add(cur);
+        if (striped) {
+          liveIndices.add((byte) stripedBlock.getStorageBlockIndex(storage));
+        }
       }
     }
     DatanodeInfo[] locs = liveNodes.toArray(new DatanodeInfo[liveNodes.size()]);
-    BlockType blockType = storedBlock.getBlockType();
-    BlockPlacementPolicy placementPolicy = placementPolicies
-        .getPolicy(blockType);
-    int numReplicas = blockType == STRIPED ? ((BlockInfoStriped) storedBlock)
-        .getRealTotalBlockNum() : storedBlock.getReplication();
-    return placementPolicy.verifyBlockPlacement(locs, numReplicas);
+    if (striped) {
+      byte[] indices = new byte[liveIndices.size()];
+      for (int i = 0; i < indices.length; i++) {
+        indices[i] = liveIndices.get(i);
+      }
+      return placementPolicies.getErasureCodingPolicy().verifyBlockPlacement(
+          locs, indices, stripedBlock.getRealTotalBlockNum(),
+          stripedBlock.getParityBlockNum());
+    }
+    return placementPolicies.getPolicy(CONTIGUOUS)
+        .verifyBlockPlacement(locs, storedBlock.getReplication());
   }
 
   boolean isNeededReconstructionForMaintenance(BlockInfo storedBlock,
