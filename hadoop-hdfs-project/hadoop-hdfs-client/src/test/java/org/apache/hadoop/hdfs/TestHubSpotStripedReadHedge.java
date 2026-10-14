@@ -19,6 +19,8 @@ package org.apache.hadoop.hdfs;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Collections;
@@ -32,12 +34,14 @@ import java.util.concurrent.TimeUnit;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSHedgedReadMetrics;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.AlignedStripe;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.BlockReadStats;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.StripingChunk;
+import org.apache.hadoop.io.erasurecode.ECChunk;
 import org.apache.hadoop.util.Time;
 import org.junit.Before;
 import org.junit.Test;
@@ -729,6 +733,52 @@ public class TestHubSpotStripedReadHedge {
     Fixture f = new Fixture(hedge(THRESHOLD), 2);
     assertFalse(f.hedge.hasOutstandingHedges(f.futures, f.stripe));
     assertTrue(f.retire().isEmpty());
+  }
+
+  @Test
+  public void testStoppedScratchChunkIsDroppedFromDecodeInputs() {
+    AlignedStripe stripe = new AlignedStripe(0, 1024, WIDTH);
+    ECChunk[] inputs = new ECChunk[WIDTH];
+    inputs[6] = new ECChunk(ByteBuffer.allocate(1024), 0, 1024);
+    stripe.chunks[6] = new StripingChunk(inputs[6].getBuffer());
+    stripe.chunks[6].state = StripingChunk.PENDING;
+
+    assertEquals(0,
+        HubSpotStripedReadHedge.resolveStoppedChunks(stripe, inputs));
+    assertNull("a stopped read's buffer must not be decoded from",
+        inputs[6]);
+    assertEquals(StripingChunk.PENDING, stripe.chunks[6].state);
+  }
+
+  @Test
+  public void testStoppedCallerChunkIsReconstructed() {
+    AlignedStripe stripe = new AlignedStripe(0, 1024, WIDTH);
+    ECChunk[] inputs = new ECChunk[WIDTH];
+    inputs[3] = new ECChunk(ByteBuffer.allocate(1024), 0, 1024);
+    stripe.chunks[3] = new StripingChunk(ByteBuffer.allocate(1024));
+    stripe.chunks[3].state = StripingChunk.PENDING;
+
+    assertEquals(1,
+        HubSpotStripedReadHedge.resolveStoppedChunks(stripe, inputs));
+    assertEquals(StripingChunk.MISSING, stripe.chunks[3].state);
+    assertNotNull("its decode input is now the decode output", inputs[3]);
+  }
+
+  @Test
+  public void testChunksThatAreNotPendingAreNotResolved() {
+    AlignedStripe stripe = new AlignedStripe(0, 1024, WIDTH);
+    ECChunk[] inputs = new ECChunk[WIDTH];
+    inputs[0] = new ECChunk(ByteBuffer.allocate(1024), 0, 1024);
+    stripe.chunks[0] = new StripingChunk(inputs[0].getBuffer());
+    stripe.chunks[0].state = StripingChunk.FETCHED;
+    stripe.chunks[1] = new StripingChunk(ByteBuffer.allocate(1024));
+    stripe.chunks[1].state = StripingChunk.MISSING;
+
+    assertEquals(0,
+        HubSpotStripedReadHedge.resolveStoppedChunks(stripe, inputs));
+    assertNotNull(inputs[0]);
+    assertEquals(StripingChunk.FETCHED, stripe.chunks[0].state);
+    assertEquals(StripingChunk.MISSING, stripe.chunks[1].state);
   }
 
 

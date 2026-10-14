@@ -503,6 +503,9 @@ abstract class StripeReader {
               continue;
             }
             clearFutures();
+            alignedStripe.missingChunksNum +=
+                HubSpotStripedReadHedge.resolveStoppedChunks(alignedStripe,
+                    decodeInputs);
             break;
           }
         } else {
