@@ -34,6 +34,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.AlignedStripe;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.BlockReadStats;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.StripingChunk;
+import org.apache.hadoop.io.erasurecode.ECChunk;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -744,6 +745,43 @@ class HubSpotStripedReadHedge {
     retired.add(index);
     retiredIndices.add(index);
     metrics.incHedgedReadWins();
+  }
+
+  /**
+   * Called once a stripe holds a complete reconstruction set and its
+   * outstanding reads have been stopped. Upstream reaches that point with every
+   * chunk it requested either fetched or missing. A hedge can reach it with a
+   * chunk still PENDING: one the throttler refused to hedge, or a parity unit
+   * that lost the race. Its buffer holds whatever the stopped read managed to
+   * write, if anything, and the decode must not trust it.
+   *
+   * <p>A PENDING chunk whose buffer is its decode input buffer is scratch space
+   * (parity, or data outside the range being read), so it is dropped from the
+   * decode inputs; otherwise the decoder, which takes the first dataBlkNum
+   * non-null inputs, can pick it over a fetched one. Any other PENDING chunk
+   * holds data the caller asked for, so it is marked MISSING and
+   * reconstructed.
+   *
+   * @return how many chunks were marked MISSING
+   */
+  static int resolveStoppedChunks(AlignedStripe alignedStripe,
+      ECChunk[] decodeInputs) {
+    int missing = 0;
+    for (int i = 0; i < alignedStripe.chunks.length; i++) {
+      final StripingChunk chunk = alignedStripe.chunks[i];
+      if (chunk == null || chunk.state != StripingChunk.PENDING) {
+        continue;
+      }
+      if (decodeInputs != null && decodeInputs[i] != null
+          && chunk.useByteBuffer()
+          && chunk.getByteBuffer() == decodeInputs[i].getBuffer()) {
+        decodeInputs[i] = null;
+      } else {
+        chunk.state = StripingChunk.MISSING;
+        missing++;
+      }
+    }
+    return missing;
   }
 
   /**

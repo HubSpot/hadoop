@@ -26,8 +26,13 @@ import static org.junit.Assert.assertTrue;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.conf.Configuration;
@@ -524,6 +529,164 @@ public class TestHubSpotStripedReadHedgeEndToEnd {
     byte[] expected = writeFileSpanningStripes();
     byte[] actual = statefulReadAfterHedgeLeavesParityInFlight(0, 3000);
     assertArrayEquals(expected, actual);
+  }
+
+  /** Hedge threshold for the cases that need the hedge to retry often. */
+  private static final long FAST_RETRY_THRESHOLD_MS = 150;
+
+  /** How long the one hedgeable straggler takes to finish on its own. */
+  private static final long HEDGEABLE_STRAGGLER_MS = 3000;
+
+  /** Outlasts the hedgeable straggler, so it is still running at the end. */
+  private static final long UNHEDGEABLE_STRAGGLER_MS = 8000;
+
+  /** Delays the next transfer from each DataNode once, by its own amount. */
+  private void delayNextTransferFrom(Map<String, Long> delayByUuid) {
+    final Map<String, Long> pending = new ConcurrentHashMap<>(delayByUuid);
+    DataNodeFaultInjector.set(new DataNodeFaultInjector() {
+      @Override
+      public void delayBlockTransfer(String datanodeUuid) {
+        Long delayMs = pending.remove(datanodeUuid);
+        if (delayMs == null) {
+          return;
+        }
+        try {
+          Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    });
+  }
+
+  /**
+   * What production hit while several DataNodes were slow at once: the
+   * breaker lets the hedge read around one straggler but refuses the others,
+   * so a stripe can collect a full reconstruction set while a read nobody
+   * hedged is still running. Allowing only one impaired node, and impairing
+   * block 1's DataNode with a warm-up read, makes block 1 the only straggler
+   * that can ever be hedged.
+   *
+   * @param delayByBlockIndex one-shot transfer delays for the read under test
+   * @param positional whether the read under test is positional
+   * @param offset where the read under test starts
+   * @param len how many bytes it reads
+   */
+  private byte[] readWithOnlyBlockOneHedgeable(
+      Map<Integer, Long> delayByBlockIndex, boolean positional, long offset,
+      int len) throws Exception {
+    final LocatedStripedBlock group = firstBlockGroup();
+    final int cellSize = ecPolicy.getCellSize();
+    final int stripeLen = cellSize * ecPolicy.getNumDataUnits();
+    Configuration clientConf = new Configuration(conf);
+    clientConf.setLong(HEDGE_KEY, FAST_RETRY_THRESHOLD_MS);
+    clientConf.setInt(
+        HubSpotStripedReadHedgeThrottler.MAX_IMPAIRED_NODES_KEY, 1);
+    clientConf.setLong(HubSpotStripedReadHedgeThrottler.COOLDOWN_MILLIS_KEY, 1);
+    try (FileSystem client =
+        FileSystem.newInstance(cluster.getURI(0), clientConf)) {
+      delayNextTransferFrom(Collections.singletonMap(
+          locationOfBlockIndex(group, 1).getDatanodeUuid(), 1000L));
+      long before = hedgedReadOps();
+      byte[] warmUp = new byte[64 * 1024];
+      try (FSDataInputStream in = client.open(filePath)) {
+        in.readFully(stripeLen + cellSize, warmUp, 0, warmUp.length);
+      }
+      assertTrue("the warm-up read must hedge block 1",
+          hedgedReadOps() > before);
+
+      Map<String, Long> delayByUuid = new HashMap<>();
+      for (Map.Entry<Integer, Long> e : delayByBlockIndex.entrySet()) {
+        delayByUuid.put(
+            locationOfBlockIndex(group, e.getKey()).getDatanodeUuid(),
+            e.getValue());
+      }
+      delayNextTransferFrom(delayByUuid);
+      before = hedgedReadOps();
+      byte[] actual = new byte[len];
+      try (FSDataInputStream in = client.open(filePath)) {
+        if (positional) {
+          in.readFully(offset, actual, 0, len);
+        } else {
+          in.seek(offset);
+          IOUtils.readFully(in, actual, 0, len);
+        }
+      }
+      assertTrue("the read under test must hedge block 1",
+          hedgedReadOps() > before);
+      return actual;
+    }
+  }
+
+  /**
+   * Block 2 fails checksum, so the stripe must decode, and the parity read
+   * issued for it is too slow to finish and cannot be hedged. The stripe
+   * completes from the other parity units with that read stopped part way,
+   * and its buffer must not be used as a decode input.
+   */
+  private Map<Integer, Long> parityReadLeftRunningDuringDecode()
+      throws IOException {
+    corruptInternalBlock(firstBlockGroup(), 2, 1024, 4096);
+    Map<Integer, Long> delays = new HashMap<>();
+    delays.put(1, HEDGEABLE_STRAGGLER_MS);
+    delays.put(2, 250L);
+    delays.put(ecPolicy.getNumDataUnits(), UNHEDGEABLE_STRAGGLER_MS);
+    return delays;
+  }
+
+  /**
+   * Block 3 is slower than block 1 and cannot be hedged, so the stripe
+   * completes from block 1 and parity with block 3 stopped part way. Nothing
+   * in the stripe failed, so block 3 must be reconstructed rather than
+   * returned as whatever its read managed to write.
+   */
+  private Map<Integer, Long> dataReadLeftRunningWithoutDecode() {
+    Map<Integer, Long> delays = new HashMap<>();
+    delays.put(1, HEDGEABLE_STRAGGLER_MS);
+    delays.put(3, UNHEDGEABLE_STRAGGLER_MS);
+    return delays;
+  }
+
+  @Test
+  public void testStatefulDecodeIgnoresParityReadStoppedPartWay()
+      throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    int stripeLen = ecPolicy.getCellSize() * ecPolicy.getNumDataUnits();
+    byte[] actual = readWithOnlyBlockOneHedgeable(
+        parityReadLeftRunningDuringDecode(), false, 0, stripeLen);
+    assertArrayEquals(Arrays.copyOfRange(expected, 0, stripeLen), actual);
+  }
+
+  @Test
+  public void testPositionalDecodeIgnoresParityReadStoppedPartWay()
+      throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    int offset = 2 * ecPolicy.getCellSize();
+    int len = 64 * 1024;
+    byte[] actual = readWithOnlyBlockOneHedgeable(
+        parityReadLeftRunningDuringDecode(), true, offset, len);
+    assertArrayEquals(Arrays.copyOfRange(expected, offset, offset + len),
+        actual);
+  }
+
+  @Test
+  public void testStatefulReadReconstructsDataReadStoppedPartWay()
+      throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    int stripeLen = ecPolicy.getCellSize() * ecPolicy.getNumDataUnits();
+    byte[] actual = readWithOnlyBlockOneHedgeable(
+        dataReadLeftRunningWithoutDecode(), false, 0, stripeLen);
+    assertArrayEquals(Arrays.copyOfRange(expected, 0, stripeLen), actual);
+  }
+
+  @Test
+  public void testPositionalReadReconstructsDataReadStoppedPartWay()
+      throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    int stripeLen = ecPolicy.getCellSize() * ecPolicy.getNumDataUnits();
+    byte[] actual = readWithOnlyBlockOneHedgeable(
+        dataReadLeftRunningWithoutDecode(), true, 0, stripeLen);
+    assertArrayEquals(Arrays.copyOfRange(expected, 0, stripeLen), actual);
   }
 
   /** With the hedge disabled, behaviour must be exactly as upstream. */
