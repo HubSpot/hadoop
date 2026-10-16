@@ -21,20 +21,30 @@ import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.net.Node;
+import org.apache.hadoop.util.Preconditions;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyErasureCoding.soleCopiesPerDomain;
 
 class ErasureCodingWork extends BlockReconstructionWork {
   private final byte[] liveBlockIndices;
   private final byte[] liveBusyBlockIndices;
   private final byte[] excludeReconstructedIndices;
   private final String blockPoolId;
+  /**
+   * The storages the group's placement was judged on (see
+   * {@link BlockManager#getPlacementStorages}), when only placement needs
+   * fixing.
+   */
+  private List<DatanodeStorageInfo> placementStorages;
 
   public ErasureCodingWork(String blockPoolId, BlockInfo block,
       BlockCollection bc,
@@ -56,6 +66,14 @@ class ErasureCodingWork extends BlockReconstructionWork {
 
   byte[] getLiveBlockIndices() {
     return liveBlockIndices;
+  }
+
+  /**
+   * Set the storages the group's placement was judged on, so that relief
+   * copies are chosen against the same view of the placement.
+   */
+  void setPlacementStorages(List<DatanodeStorageInfo> storages) {
+    this.placementStorages = storages;
   }
 
   @Override
@@ -109,31 +127,98 @@ class ErasureCodingWork extends BlockReconstructionWork {
   }
 
   /**
-   * We have all the internal blocks but not enough racks. Thus we do not need
-   * to do decoding but only simply make an extra copy of an internal block. In
-   * this scenario, use this method to choose the source datanode for simple
-   * replication.
-   * @return The index of the source datanode.
+   * Schedule copies of existing internal blocks into {@code targets} so that
+   * the group's placement satisfies {@link BlockPlacementPolicyErasureCoding}:
+   * no failure domain may hold more than the parity count of internal blocks
+   * that exist nowhere else, and the group should occupy every domain it can.
+   * <p>
+   * Each target receives at most one copy, picked greedily:
+   * <ol>
+   *   <li>An internal block whose only copies are in the most over-budget
+   *   domain (other than the target's), since copying it out reduces that
+   *   domain's exposure by one.</li>
+   *   <li>Otherwise, if the target's domain holds no copy of the group yet, any
+   *   internal block, since the copy adds a domain to the group.</li>
+   * </ol>
+   * A target for which no copy improves placement is left unused.
+   *
+   * @return the targets that were given a copy
    */
-  private int chooseSource4SimpleReplication() {
-    Map<String, List<Integer>> map = new HashMap<>();
-    for (int i = 0; i < getSrcNodes().length; i++) {
-      final String rack = getSrcNodes()[i].getNetworkLocation();
-      List<Integer> dnList = map.get(rack);
-      if (dnList == null) {
-        dnList = new ArrayList<>();
-        map.put(rack, dnList);
+  private DatanodeStorageInfo[] addPlacementRelievingCopies(
+      DatanodeStorageInfo[] targets, BlockInfoStriped stripedBlk) {
+    final int budget = stripedBlk.getParityBlockNum();
+    final DatanodeDescriptor[] srcNodes = getSrcNodes();
+
+    // The domains holding a copy of each internal block, counted exactly as
+    // the placement policy counted them when it asked for these copies.
+    Preconditions.checkState(placementStorages != null,
+        "Placement storages of %s were not set", stripedBlk);
+    Map<Byte, Set<String>> domainsPerIndex = new HashMap<>();
+    for (DatanodeStorageInfo storage : placementStorages) {
+      int index = stripedBlk.getStorageBlockIndex(storage);
+      if (index < 0) {
+        continue;
       }
-      dnList.add(i);
+      domainsPerIndex.computeIfAbsent((byte) index, k -> new HashSet<>())
+          .add(storage.getDatanodeDescriptor().getNetworkLocation());
     }
-    List<Integer> max = null;
-    for (Map.Entry<String, List<Integer>> entry : map.entrySet()) {
-      if (max == null || entry.getValue().size() > max.size()) {
-        max = entry.getValue();
+
+    List<DatanodeStorageInfo> used = new ArrayList<>(targets.length);
+    for (DatanodeStorageInfo target : targets) {
+      final Set<String> occupied = occupiedDomains(domainsPerIndex);
+      final String targetDomain =
+          target.getDatanodeDescriptor().getNetworkLocation();
+      final boolean newDomain = !occupied.contains(targetDomain);
+      final Map<String, Integer> soleCopies = soleCopiesPerDomain(
+          domainsPerIndex);
+
+      int bestSource = -1;
+      int bestScore = 0;
+      for (int i = 0; i < srcNodes.length; i++) {
+        final byte index = liveBlockIndices[i];
+        final Set<String> domains = domainsPerIndex.get(index);
+        if (domains != null && domains.contains(targetDomain)) {
+          // The target's domain already has this internal block.
+          continue;
+        }
+        int score = 0;
+        if (domains != null && domains.size() == 1) {
+          final int exposure = soleCopies.get(domains.iterator().next());
+          if (exposure > budget) {
+            // Relieves an over-budget domain; prefer the most exposed one.
+            score = 2 + exposure;
+          }
+        }
+        if (score == 0 && newDomain) {
+          score = 1;
+        }
+        if (score > bestScore || (score == bestScore && score > 0
+            && !srcNodes[bestSource].isInService()
+            && srcNodes[i].isInService())) {
+          bestScore = score;
+          bestSource = i;
+        }
       }
+      if (bestSource < 0) {
+        LOG.debug("No internal block of {} improves placement when copied to"
+            + " {}; leaving the target unused", stripedBlk, target);
+        continue;
+      }
+      createReplicationWork(bestSource, target);
+      used.add(target);
+      domainsPerIndex.computeIfAbsent(liveBlockIndices[bestSource],
+          k -> new HashSet<>()).add(targetDomain);
     }
-    assert max != null;
-    return max.get(0);
+    return used.toArray(new DatanodeStorageInfo[0]);
+  }
+
+  private static Set<String> occupiedDomains(
+      Map<Byte, Set<String>> domainsPerIndex) {
+    Set<String> occupied = new HashSet<>();
+    for (Set<String> domains : domainsPerIndex.values()) {
+      occupied.addAll(domains);
+    }
+    return occupied;
   }
 
   @Override
@@ -146,11 +231,9 @@ class ErasureCodingWork extends BlockReconstructionWork {
     // targets are trimmed to those so that pending reconstruction only waits
     // for copies that were actually requested.
     if (hasNotEnoughRack()) {
-      // if we already have all the internal blocks, but not enough racks,
-      // we only need to replicate one internal block to a new rack
-      int sourceIndex = chooseSource4SimpleReplication();
-      createReplicationWork(sourceIndex, targets[0]);
-      setTargets(Arrays.copyOf(targets, 1));
+      // All internal blocks are live but the placement is unsafe. Copy
+      // internal blocks into the targets, each one chosen to fix the placement.
+      setTargets(addPlacementRelievingCopies(targets, stripedBlk));
     } else if ((numberReplicas.decommissioning() > 0 ||
         numberReplicas.liveEnteringMaintenanceReplicas() > 0) &&
         hasAllInternalBlocks()) {
