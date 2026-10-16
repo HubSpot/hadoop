@@ -21,6 +21,7 @@ import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.net.Node;
+import org.apache.hadoop.util.Preconditions;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -38,6 +39,12 @@ class ErasureCodingWork extends BlockReconstructionWork {
   private final byte[] liveBusyBlockIndices;
   private final byte[] excludeReconstructedIndices;
   private final String blockPoolId;
+  /**
+   * The storages the group's placement was judged on (see
+   * {@link BlockManager#getPlacementStorages}), when only placement needs
+   * fixing.
+   */
+  private List<DatanodeStorageInfo> placementStorages;
 
   public ErasureCodingWork(String blockPoolId, BlockInfo block,
       BlockCollection bc,
@@ -59,6 +66,14 @@ class ErasureCodingWork extends BlockReconstructionWork {
 
   byte[] getLiveBlockIndices() {
     return liveBlockIndices;
+  }
+
+  /**
+   * Set the storages the group's placement was judged on, so that relief
+   * copies are chosen against the same view of the placement.
+   */
+  void setPlacementStorages(List<DatanodeStorageInfo> storages) {
+    this.placementStorages = storages;
   }
 
   @Override
@@ -134,11 +149,12 @@ class ErasureCodingWork extends BlockReconstructionWork {
     final int budget = stripedBlk.getParityBlockNum();
     final DatanodeDescriptor[] srcNodes = getSrcNodes();
 
-    // The domains holding a live copy of each internal block. Copies on
-    // decommissioning or maintenance nodes do not protect the group, matching
-    // the policy's verification.
+    // The domains holding a copy of each internal block, counted exactly as
+    // the placement policy counted them when it asked for these copies.
+    Preconditions.checkState(placementStorages != null,
+        "Placement storages of %s were not set", stripedBlk);
     Map<Byte, Set<String>> domainsPerIndex = new HashMap<>();
-    for (DatanodeStorageInfo storage : getLiveReplicaStorages()) {
+    for (DatanodeStorageInfo storage : placementStorages) {
       int index = stripedBlk.getStorageBlockIndex(storage);
       if (index < 0) {
         continue;

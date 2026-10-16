@@ -62,7 +62,12 @@ public class TestErasureCodingWorkPlacement {
 
   /** Live storages and the internal-block index each holds. */
   private final List<DatanodeStorageInfo> live = new ArrayList<>();
-  private final List<Byte> liveIndices = new ArrayList<>();
+  /**
+   * Storages the block's placement is judged on (live plus maintenance) and
+   * the internal-block index each holds.
+   */
+  private final List<DatanodeStorageInfo> placement = new ArrayList<>();
+  private final List<Byte> placementIndices = new ArrayList<>();
   /** Sources handed to the work (live plus leaving-service). */
   private final List<DatanodeDescriptor> sources = new ArrayList<>();
   private final List<Byte> sourceIndices = new ArrayList<>();
@@ -78,7 +83,8 @@ public class TestErasureCodingWorkPlacement {
     block.setBlockCollectionId(1001L);
     nextHost = 0;
     live.clear();
-    liveIndices.clear();
+    placement.clear();
+    placementIndices.clear();
     sources.clear();
     sourceIndices.clear();
   }
@@ -96,10 +102,23 @@ public class TestErasureCodingWorkPlacement {
       DatanodeStorageInfo storage = newStorage(rack);
       storage.addBlock(block, new Block(BLOCK_ID + index, 0, 1));
       live.add(storage);
-      liveIndices.add((byte) index);
+      placement.add(storage);
+      placementIndices.add((byte) index);
       sources.add(storage.getDatanodeDescriptor());
       sourceIndices.add((byte) index);
     }
+  }
+
+  /**
+   * A replica on a node in maintenance: not readable, so neither live nor a
+   * source, but still counted by the placement policy.
+   */
+  private void placeInMaintenance(String rack, int index) {
+    DatanodeStorageInfo storage = newStorage(rack);
+    storage.addBlock(block, new Block(BLOCK_ID + index, 0, 1));
+    storage.getDatanodeDescriptor().setInMaintenance();
+    placement.add(storage);
+    placementIndices.add((byte) index);
   }
 
   private void placeDecommissioning(String rack, int index) {
@@ -139,6 +158,7 @@ public class TestErasureCodingWorkPlacement {
     work.chooseTargets(placementPolicy,
         BlockStoragePolicySuite.createDefaultSuite(), new HashSet<>());
     work.setNotEnoughRack();
+    work.setPlacementStorages(new ArrayList<>(placement));
     return work;
   }
 
@@ -163,9 +183,9 @@ public class TestErasureCodingWorkPlacement {
   private BlockPlacementStatus placementAfter(List<Object[]> copies) {
     List<DatanodeInfo> locs = new ArrayList<>();
     List<Byte> indices = new ArrayList<>();
-    for (int i = 0; i < live.size(); i++) {
-      locs.add(live.get(i).getDatanodeDescriptor());
-      indices.add(liveIndices.get(i));
+    for (int i = 0; i < placement.size(); i++) {
+      locs.add(placement.get(i).getDatanodeDescriptor());
+      indices.add(placementIndices.get(i));
     }
     for (Object[] copy : copies) {
       locs.add(((DatanodeStorageInfo) copy[1]).getDatanodeDescriptor());
@@ -233,6 +253,35 @@ public class TestErasureCodingWorkPlacement {
     List<Object[]> copies = scheduledCopies();
     assertEquals(1, copies.size());
     assertEquals(1, work.getTargets().length);
+    assertTrue(placementAfter(copies).isPlacementPolicySatisfied());
+  }
+
+  /**
+   * Index 2 is live in /b and also on a node in maintenance in /a. The policy
+   * counts the maintenance copy, so index 2 is not a sole copy in /b, /b holds
+   * 6 sole copies, and /a is already occupied. Copies must be chosen on that
+   * same view: copying index 2 would not relieve /b, and the group would stay
+   * unsafe after the copies finish.
+   */
+  @Test
+  public void testMaintenanceCopiesCountAsTheyDoForThePolicy() {
+    placeLive("/c", 0, 1);
+    placeLive("/b", 2, 3, 4, 5, 6, 7, 8);
+    placeInMaintenance("/a", 2);
+
+    BlockPlacementStatus before = placementAfter(Collections.emptyList());
+    assertFalse(before.isPlacementPolicySatisfied());
+    assertEquals(3, before.getAdditionalReplicasRequired());
+
+    DatanodeStorageInfo[] chosen = targets("/a", "/c", "/a");
+    ErasureCodingWork work = newWork(
+        mock(BlockPlacementPolicyErasureCoding.class), chosen);
+    work.addTaskToDatanode(new NumberReplicas());
+
+    List<Object[]> copies = scheduledCopies();
+    assertEquals(3, copies.size());
+    assertFalse("index 2 is already outside /b",
+        indicesOf(copies).contains((byte) 2));
     assertTrue(placementAfter(copies).isPlacementPolicySatisfied());
   }
 
