@@ -2433,6 +2433,10 @@ public class BlockManager implements BlockStatsMXBean {
       // mark that the reconstruction work is to replicate internal block to a
       // new rack.
       rw.setNotEnoughRack();
+      if (block.isStriped()) {
+        ((ErasureCodingWork) rw).setPlacementStorages(
+            getPlacementStorages(block));
+      }
     }
 
     // Add block to the datanode's task list
@@ -5147,8 +5151,6 @@ public class BlockManager implements BlockStatsMXBean {
         }
       }
     }
-    Collection<DatanodeDescriptor> corruptNodes = corruptReplicas
-        .getNodes(storedBlock);
     for (DatanodeStorageInfo storage : blocksMap.getStorages(storedBlock)) {
       if (storage.getStorageType() == StorageType.PROVIDED
           && storage.getState() == State.NORMAL) {
@@ -5171,15 +5173,11 @@ public class BlockManager implements BlockStatsMXBean {
           }
         };
       }
-      final DatanodeDescriptor cur = getDatanodeDescriptorFromStorage(storage);
-      // Nodes under maintenance should be counted as valid replicas from
-      // rack policy point of view.
-      if (!cur.isDecommissionInProgress() && !cur.isDecommissioned()
-          && ((corruptNodes == null) || !corruptNodes.contains(cur))) {
-        liveNodes.add(cur);
-        if (striped) {
-          liveIndices.add((byte) stripedBlock.getStorageBlockIndex(storage));
-        }
+    }
+    for (DatanodeStorageInfo storage : getPlacementStorages(storedBlock)) {
+      liveNodes.add(getDatanodeDescriptorFromStorage(storage));
+      if (striped) {
+        liveIndices.add((byte) stripedBlock.getStorageBlockIndex(storage));
       }
     }
     DatanodeInfo[] locs = liveNodes.toArray(new DatanodeInfo[liveNodes.size()]);
@@ -5194,6 +5192,26 @@ public class BlockManager implements BlockStatsMXBean {
     }
     return placementPolicies.getPolicy(CONTIGUOUS)
         .verifyBlockPlacement(locs, storedBlock.getReplication());
+  }
+
+  /**
+   * The storages of {@code block} that its placement is judged on: all of
+   * them except those on decommissioning, decommissioned or corrupt nodes.
+   * Nodes under maintenance count as valid replicas from the rack policy's
+   * point of view.
+   */
+  List<DatanodeStorageInfo> getPlacementStorages(BlockInfo block) {
+    final Collection<DatanodeDescriptor> corruptNodes =
+        corruptReplicas.getNodes(block);
+    final List<DatanodeStorageInfo> storages = new ArrayList<>();
+    for (DatanodeStorageInfo storage : blocksMap.getStorages(block)) {
+      final DatanodeDescriptor cur = getDatanodeDescriptorFromStorage(storage);
+      if (!cur.isDecommissionInProgress() && !cur.isDecommissioned()
+          && (corruptNodes == null || !corruptNodes.contains(cur))) {
+        storages.add(storage);
+      }
+    }
+    return storages;
   }
 
   boolean isNeededReconstructionForMaintenance(BlockInfo storedBlock,
