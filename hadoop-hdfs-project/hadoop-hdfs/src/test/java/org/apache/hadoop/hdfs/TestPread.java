@@ -17,11 +17,15 @@
  */
 package org.apache.hadoop.hdfs;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.EOFException;
+import java.io.File;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -71,6 +75,10 @@ public class TestPread {
   static final int blockSize = 4096;
   static final int numBlocksPerFile = 12;
   static final int fileSize = numBlocksPerFile * blockSize;
+  private static final int HEDGED_READ_TEST_POOL_SIZE = 5;
+  private static final long HEDGED_READ_TEST_THRESHOLD_MILLIS = 50;
+  private static final long HEDGED_READ_TEST_SLOW_FETCH_MILLIS = 200;
+  private static final int HEDGED_READ_TEST_FILE_LENGTH = 4096;
   boolean simulatedStorage;
   boolean isHedgedRead;
 
@@ -614,6 +622,204 @@ public class TestPread {
       fileSys.close();
       cluster.shutdown();
     }
+  }
+
+  @Test(timeout = 60000)
+  public void testHedgedReadSkippedForLocalShortCircuit() throws Exception {
+    assertSlowPreadHedging(true, true, false);
+  }
+
+  @Test(timeout = 60000)
+  public void testHedgedReadNotSkippedWhenFlagOff() throws Exception {
+    assertSlowPreadHedging(true, false, true);
+  }
+
+  @Test(timeout = 60000)
+  public void testHedgedReadNotSkippedWhenShortCircuitDisabled()
+      throws Exception {
+    assertSlowPreadHedging(false, true, true);
+  }
+
+  @Test(timeout = 60000)
+  public void testHedgedReadNotSkippedForFileUnderConstruction()
+      throws Exception {
+    DFSClientFaultInjector old = DFSClientFaultInjector.get();
+    DFSClientFaultInjector.set(slowFetchInjector());
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(
+        new HdfsConfiguration()).numDataNodes(3).build();
+        DistributedFileSystem fs = newHedgedReadClient(cluster, true, true)) {
+      Path path = new Path("/hedgedReadUnderConstruction.dat");
+      byte[] data = randomHedgedReadTestData();
+      try (FSDataOutputStream out = fs.create(path, (short) 3)) {
+        out.write(data);
+        out.hflush();
+        assertTrue(fs.getClient().isHedgedReadsEnabled());
+        DFSHedgedReadMetrics metrics = fs.getClient().getHedgedReadMetrics();
+        long hedgedReadOpsBefore = metrics.getHedgedReadOps();
+        byte[] buffer = new byte[data.length];
+        try (DFSInputStream in = fs.getClient().open(path.toString())) {
+          in.readFully(0, buffer);
+          assertArrayEquals(data, buffer);
+          assertHedged(in, metrics, hedgedReadOpsBefore, true);
+        }
+        waitForHedgedReadsToFinish(fs.getClient());
+      }
+    } finally {
+      DFSClientFaultInjector.set(old);
+    }
+  }
+
+  @Test(timeout = 60000)
+  public void testSkippedHedgeRetriesNextReplica() throws Exception {
+    DFSClientFaultInjector old = DFSClientFaultInjector.get();
+    DFSClientFaultInjector injector =
+        Mockito.mock(DFSClientFaultInjector.class);
+    AtomicInteger fetchAttempts = new AtomicInteger();
+    Mockito.doAnswer(invocation -> {
+      if (fetchAttempts.incrementAndGet() == 1) {
+        throw new IOException("Injected failure on first fetch");
+      }
+      return null;
+    }).when(injector).fetchFromDatanodeException();
+    DFSClientFaultInjector.set(injector);
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(
+        new HdfsConfiguration()).numDataNodes(3).build();
+        DistributedFileSystem fs = newHedgedReadClient(cluster, true, true)) {
+      Path path = new Path("/hedgedReadSkippedRetry.dat");
+      byte[] data = writeHedgedReadTestFile(fs, path);
+      DFSClient dfsClient = fs.getClient();
+      assertTrue(dfsClient.isHedgedReadsEnabled());
+      DFSHedgedReadMetrics metrics = dfsClient.getHedgedReadMetrics();
+      long hedgedReadOpsBefore = metrics.getHedgedReadOps();
+      byte[] buffer = new byte[data.length];
+      try (DFSInputStream in = dfsClient.open(path.toString())) {
+        DatanodeInfo firstChoice =
+            in.getBestNodeDNAddrPair(in.getAllBlocks().get(0), null).info;
+        in.readFully(0, buffer);
+        assertArrayEquals(data, buffer);
+        assertHedged(in, metrics, hedgedReadOpsBefore, false);
+        assertEquals(2, fetchAttempts.get());
+        assertEquals(1, dfsClient.getDeadNodes(in).size());
+        assertTrue(dfsClient.getDeadNodes(in).containsKey(firstChoice));
+      }
+    } finally {
+      DFSClientFaultInjector.set(old);
+    }
+  }
+
+  @Test(timeout = 60000)
+  public void testShouldHedgeReadFromOnlyNonLocalAddresses() throws Exception {
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(
+        new HdfsConfiguration()).numDataNodes(3).build();
+        DistributedFileSystem fs = newHedgedReadClient(cluster, true, true)) {
+      Path path = new Path("/hedgedReadShouldHedge.dat");
+      writeHedgedReadTestFile(fs, path);
+      try (DFSInputStream in = fs.getClient().open(path.toString())) {
+        LocatedBlock block = in.getAllBlocks().get(0);
+        DFSInputStream.DNAddrPair local = in.getBestNodeDNAddrPair(block, null);
+        int port = local.addr.getPort();
+        DFSInputStream.DNAddrPair remote = new DFSInputStream.DNAddrPair(
+            local.info, new InetSocketAddress("192.0.2.1", port),
+            local.storageType, local.block);
+        DFSInputStream.DNAddrPair unresolved = new DFSInputStream.DNAddrPair(
+            local.info, InetSocketAddress.createUnresolved("unresolved.invalid", port),
+            local.storageType, local.block);
+
+        assertFalse(in.shouldHedgeReadFrom(local));
+        assertTrue(in.shouldHedgeReadFrom(remote));
+        assertTrue(in.shouldHedgeReadFrom(unresolved));
+      }
+    }
+  }
+
+  private void assertSlowPreadHedging(boolean shortCircuit,
+      boolean skipShortCircuit, boolean expectHedged) throws Exception {
+    DFSClientFaultInjector old = DFSClientFaultInjector.get();
+    DFSClientFaultInjector.set(slowFetchInjector());
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(
+        new HdfsConfiguration()).numDataNodes(3).build();
+        DistributedFileSystem fs =
+            newHedgedReadClient(cluster, shortCircuit, skipShortCircuit)) {
+      Path path = new Path("/hedgedReadSlowPread.dat");
+      byte[] data = writeHedgedReadTestFile(fs, path);
+      assertTrue(fs.getClient().isHedgedReadsEnabled());
+      DFSHedgedReadMetrics metrics = fs.getClient().getHedgedReadMetrics();
+      long hedgedReadOpsBefore = metrics.getHedgedReadOps();
+      byte[] buffer = new byte[data.length];
+      try (DFSInputStream in = fs.getClient().open(path.toString())) {
+        in.readFully(0, buffer);
+        assertArrayEquals(data, buffer);
+        assertHedged(in, metrics, hedgedReadOpsBefore, expectHedged);
+      }
+      waitForHedgedReadsToFinish(fs.getClient());
+    } finally {
+      DFSClientFaultInjector.set(old);
+    }
+  }
+
+  private static void waitForHedgedReadsToFinish(DFSClient client)
+      throws TimeoutException, InterruptedException {
+    GenericTestUtils.waitFor(
+        () -> client.getHedgedReadsThreadPool().getActiveCount() == 0, 10,
+        10000);
+  }
+
+  private static void assertHedged(DFSInputStream in,
+      DFSHedgedReadMetrics metrics, long hedgedReadOpsBefore,
+      boolean expectHedged) {
+    if (expectHedged) {
+      assertTrue(in.getHedgedReadOpsLoopNumForTesting() > 0);
+      assertTrue(metrics.getHedgedReadOps() > hedgedReadOpsBefore);
+    } else {
+      assertEquals(0, in.getHedgedReadOpsLoopNumForTesting());
+      assertEquals(hedgedReadOpsBefore, metrics.getHedgedReadOps());
+    }
+  }
+
+  private DistributedFileSystem newHedgedReadClient(MiniDFSCluster cluster,
+      boolean shortCircuit, boolean skipShortCircuit) throws IOException {
+    Configuration conf = new Configuration(cluster.getConfiguration(0));
+    conf.setBoolean("fs.hdfs.impl.disable.cache", true);
+    conf.setInt(HdfsClientConfigKeys.HedgedRead.THREADPOOL_SIZE_KEY,
+        HEDGED_READ_TEST_POOL_SIZE);
+    conf.setLong(HdfsClientConfigKeys.HedgedRead.THRESHOLD_MILLIS_KEY,
+        HEDGED_READ_TEST_THRESHOLD_MILLIS);
+    conf.setBoolean(HdfsClientConfigKeys.HedgedRead.SKIP_SHORT_CIRCUIT_KEY,
+        skipShortCircuit);
+    conf.setBoolean(HdfsClientConfigKeys.Read.ShortCircuit.KEY, shortCircuit);
+    conf.set(HdfsClientConfigKeys.DFS_DOMAIN_SOCKET_PATH_KEY,
+        new File(GenericTestUtils.getTestDir(), "TestPread.sock")
+            .getAbsolutePath());
+    return (DistributedFileSystem) FileSystem.newInstance(cluster.getURI(0),
+        conf);
+  }
+
+  private static DFSClientFaultInjector slowFetchInjector() {
+    return new DFSClientFaultInjector() {
+      @Override
+      public void startFetchFromDatanode() {
+        try {
+          Thread.sleep(HEDGED_READ_TEST_SLOW_FETCH_MILLIS);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    };
+  }
+
+  private static byte[] writeHedgedReadTestFile(FileSystem fs, Path path)
+      throws IOException {
+    byte[] data = randomHedgedReadTestData();
+    try (FSDataOutputStream out = fs.create(path, (short) 3)) {
+      out.write(data);
+    }
+    return data;
+  }
+
+  private static byte[] randomHedgedReadTestData() {
+    byte[] data = new byte[HEDGED_READ_TEST_FILE_LENGTH];
+    new Random(seed).nextBytes(data);
+    return data;
   }
 
   /**

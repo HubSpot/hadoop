@@ -491,6 +491,8 @@ public interface HdfsClientConfigKeys {
     long    THRESHOLD_MILLIS_DEFAULT = 500;
     String  THREADPOOL_SIZE_KEY = PREFIX + "threadpool.size";
     int     THREADPOOL_SIZE_DEFAULT = 0;
+    String  SKIP_SHORT_CIRCUIT_KEY = PREFIX + "skip.short.circuit";
+    boolean SKIP_SHORT_CIRCUIT_DEFAULT = false;
   }
 
   /** dfs.client.read.striped configuration properties */
