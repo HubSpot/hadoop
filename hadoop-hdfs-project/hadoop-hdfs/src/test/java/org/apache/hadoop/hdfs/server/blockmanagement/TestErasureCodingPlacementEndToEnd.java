@@ -33,8 +33,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -45,6 +47,7 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
@@ -54,6 +57,7 @@ import org.junit.After;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 /**
  * End-to-end test of {@link BlockPlacementPolicyErasureCoding} on a real
@@ -76,9 +80,8 @@ public class TestErasureCodingPlacementEndToEnd {
   private static final long STALE_INTERVAL_MS = 3000;
 
   static {
-    GenericTestUtils.setLogLevel(BlockManager.LOG, org.slf4j.event.Level.DEBUG);
-    GenericTestUtils.setLogLevel(BlockManager.blockLog,
-        org.slf4j.event.Level.DEBUG);
+    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.DEBUG);
+    GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.DEBUG);
   }
 
   private MiniDFSCluster cluster;
@@ -237,46 +240,82 @@ public class TestErasureCodingPlacementEndToEnd {
     return null;
   }
 
-  private void waitUntilSettled(Path file, String phase) throws Exception {
+  private <T> T withReadLock(Supplier<T> action) {
+    FSNamesystem fsn = cluster.getNamesystem();
+    fsn.readLock();
+    try {
+      return action.get();
+    } finally {
+      fsn.readUnlock();
+    }
+  }
+
+  private void runWithReadLock(Runnable action) {
+    withReadLock(() -> {
+      action.run();
+      return null;
+    });
+  }
+
+  private void runWithWriteLock(Runnable action) {
+    FSNamesystem fsn = cluster.getNamesystem();
+    fsn.writeLock();
+    try {
+      action.run();
+    } finally {
+      fsn.writeUnlock();
+    }
+  }
+
+  /**
+   * Poll, under the read lock, until {@code unsettledReason} returns null.
+   * Fails with {@code failureMessage} and the last reason it returned.
+   */
+  private void waitUntil(String failureMessage,
+      Supplier<String> unsettledReason) throws Exception {
     final AtomicReference<String> last = new AtomicReference<>();
     try {
       GenericTestUtils.waitFor(() -> {
-        FSNamesystem fsn = cluster.getNamesystem();
-        fsn.readLock();
-        try {
-          Set<String> racks = racks();
-          for (BlockInfoStriped g : groups(file)) {
-            String reason = unsettledReason(g, racks);
-            if (reason != null) {
-              last.set(g + ": " + reason);
-              return false;
-            }
-          }
-          return true;
-        } finally {
-          fsn.readUnlock();
-        }
+        String reason = withReadLock(unsettledReason);
+        last.set(reason);
+        return reason == null;
       }, 500, 180000);
     } catch (Exception e) {
-      throw new AssertionError(phase + " did not settle: " + last.get(), e);
+      throw new AssertionError(failureMessage + ": " + last.get(), e);
     }
+  }
+
+  private void waitUntilSettled(Path file, String phase) throws Exception {
+    waitUntil(phase + " did not settle", () -> firstUnsettled(file));
     LOG.info("{} settled", phase);
+  }
+
+  /** The first block group of {@code file} that is not settled, or null. */
+  private String firstUnsettled(Path file) {
+    Set<String> racks = racks();
+    for (BlockInfoStriped g : groups(file)) {
+      String reason = unsettledReason(g, racks);
+      if (reason != null) {
+        return g + ": " + reason;
+      }
+    }
+    return null;
   }
 
   /**
    * Background check, sampled continuously: no internal block may ever be
    * left without a physical copy on a live node.
    */
-  private final class NoLossMonitor extends Thread {
+  private final class DurabilityMonitor extends Thread {
     private final Path file;
     private final AtomicBoolean stop = new AtomicBoolean();
     private final AtomicReference<String> violation = new AtomicReference<>();
-    private final Map<Long, Integer> maxCopies = new HashMap<>();
+    private final Map<Long, Integer> maxCopies = new ConcurrentHashMap<>();
     /** Once set, no group may lose the ability to survive any rack's loss. */
     private final AtomicBoolean armed = new AtomicBoolean();
     private volatile int samples;
 
-    NoLossMonitor(Path file) {
+    DurabilityMonitor(Path file) {
       this.file = file;
       setDaemon(true);
     }
@@ -284,33 +323,7 @@ public class TestErasureCodingPlacementEndToEnd {
     @Override
     public void run() {
       while (!stop.get()) {
-        FSNamesystem fsn = cluster.getNamesystem();
-        fsn.readLock();
-        try {
-          for (BlockInfoStriped g : groups(file)) {
-            Set<Integer> present = new HashSet<>();
-            maxCopies.merge(g.getBlockId(), bm().blocksMap.numNodes(g),
-                Math::max);
-            for (DatanodeStorageInfo s : bm().blocksMap.getStorages(g)) {
-              if (s.getDatanodeDescriptor().isAlive()
-                  && !bm().isReplicaCorrupt(g, s.getDatanodeDescriptor())) {
-                present.add((int) g.getStorageBlockIndex(s));
-              }
-            }
-            if (present.size() < g.getRealTotalBlockNum()) {
-              violation.compareAndSet(null, g + " has only " + present);
-            }
-            if (armed.get()) {
-              String regression = rackLossRegression(g);
-              if (regression != null) {
-                violation.compareAndSet(null, regression);
-              }
-            }
-          }
-          samples++;
-        } finally {
-          fsn.readUnlock();
-        }
+        runWithReadLock(this::sample);
         try {
           Thread.sleep(50);
         } catch (InterruptedException e) {
@@ -319,26 +332,45 @@ public class TestErasureCodingPlacementEndToEnd {
       }
     }
 
+    private void sample() {
+      for (BlockInfoStriped g : groups(file)) {
+        Set<Integer> present = new HashSet<>();
+        maxCopies.merge(g.getBlockId(), bm().blocksMap.numNodes(g), Math::max);
+        for (DatanodeStorageInfo s : bm().blocksMap.getStorages(g)) {
+          if (s.getDatanodeDescriptor().isAlive()
+              && !bm().isReplicaCorrupt(g, s.getDatanodeDescriptor())) {
+            present.add((int) g.getStorageBlockIndex(s));
+          }
+        }
+        if (present.size() < g.getRealTotalBlockNum()) {
+          violation.compareAndSet(null, g + " has only " + present);
+        }
+        if (armed.get()) {
+          String regression = rackLossRegression(g);
+          if (regression != null) {
+            violation.compareAndSet(null, regression);
+          }
+        }
+      }
+      samples++;
+    }
+
     void arm() {
       armed.set(true);
     }
 
     /** Blocks that at some point had more copies than they do now. */
     int groupsReclaimed() {
-      int reclaimed = 0;
-      FSNamesystem fsn = cluster.getNamesystem();
-      fsn.readLock();
-      try {
+      return withReadLock(() -> {
+        int reclaimed = 0;
         for (BlockInfoStriped g : groups(file)) {
           Integer max = maxCopies.get(g.getBlockId());
           if (max != null && max > bm().blocksMap.numNodes(g)) {
             reclaimed++;
           }
         }
-      } finally {
-        fsn.readUnlock();
-      }
-      return reclaimed;
+        return reclaimed;
+      });
     }
 
     void finish() throws InterruptedException {
@@ -350,19 +382,14 @@ public class TestErasureCodingPlacementEndToEnd {
   }
 
   private void setContentsStale(boolean stale) {
-    cluster.getNamesystem().writeLock();
-    try {
+    runWithWriteLock(() -> {
       for (DatanodeDescriptor dn : bm().getDatanodeManager()
-          .getDatanodeListForReport(
-              org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType
-                  .LIVE)) {
+          .getDatanodeListForReport(HdfsConstants.DatanodeReportType.LIVE)) {
         for (DatanodeStorageInfo s : dn.getStorageInfos()) {
           s.setBlockContentsStale(stale);
         }
       }
-    } finally {
-      cluster.getNamesystem().writeUnlock();
-    }
+    });
   }
 
   /**
@@ -438,6 +465,87 @@ public class TestErasureCodingPlacementEndToEnd {
     }
   }
 
+  private void startCluster(HdfsConfiguration conf, String[] racks,
+      String[] hosts) throws Exception {
+    cluster = new MiniDFSCluster.Builder(conf).racks(racks).hosts(hosts)
+        .numDataNodes(racks.length).build();
+    cluster.waitActive();
+    fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(ecPolicy.getName());
+    fs.setErasureCodingPolicy(new Path("/"), ecPolicy.getName());
+  }
+
+  /** The scenario is only meaningful if some group starts unsafe. */
+  private void assertSomeGroupStartsUnsafe(Path file) {
+    boolean anyUnsafe = withReadLock(() -> {
+      for (BlockInfoStriped g : groups(file)) {
+        if (!status(g, liveCopies(g), -1, -1).isPlacementPolicySatisfied()) {
+          return true;
+        }
+      }
+      return false;
+    });
+    assertTrue("expected a group to start unsafely placed", anyUnsafe);
+  }
+
+  /** Grow /a and /c so relief copies have somewhere to go. */
+  private void growCluster(HdfsConfiguration conf) throws Exception {
+    cluster.startDataNodes(conf, 6, true, null,
+        new String[] {"/a", "/a", "/a", "/c", "/c", "/c"},
+        new String[] {"host-a10", "host-a11", "host-a12", "host-c13",
+            "host-c14", "host-c15"}, null, false);
+    cluster.waitActive();
+  }
+
+  /** The first group still missing a copy, pending, or unsafely placed. */
+  private String firstGroupWithoutRelief(Path file) {
+    for (BlockInfoStriped g : groups(file)) {
+      Map<Integer, List<String>> copies = liveCopies(g);
+      if (copies.size() != g.getRealTotalBlockNum()
+          || bm().pendingReconstruction.getNumReplicas(g) > 0
+          || !status(g, copies, -1, -1).isPlacementPolicySatisfied()) {
+        return g + " " + copies;
+      }
+    }
+    return null;
+  }
+
+  private void assertSomeGroupHoldsSeveralDuplicates(Path file) {
+    int multiDuplicateGroups = withReadLock(() -> {
+      int count = 0;
+      for (BlockInfoStriped g : groups(file)) {
+        int duplicated = 0;
+        for (List<String> racksOfIndex : liveCopies(g).values()) {
+          if (racksOfIndex.size() > 1) {
+            duplicated++;
+          }
+        }
+        if (duplicated > 1) {
+          count++;
+        }
+      }
+      return count;
+    });
+    assertTrue("expected groups holding several duplicates before reclaiming",
+        multiDuplicateGroups > 0);
+  }
+
+  private void decommissionNodeOnHost(String host) throws Exception {
+    DataNode original = null;
+    for (DataNode dn : cluster.getDataNodes()) {
+      if (dn.getDatanodeId().getHostName().equals(host)) {
+        original = dn;
+      }
+    }
+    assertNotNull(original);
+    DatanodeManager dm = bm().getDatanodeManager();
+    final DatanodeDescriptor decom = dm.getDatanode(original.getDatanodeId());
+    DatanodeAdminManager admin = (DatanodeAdminManager)
+        Whitebox.getInternalState(dm, "datanodeAdminManager");
+    runWithWriteLock(() -> admin.startDecommission(decom));
+    GenericTestUtils.waitFor(decom::isDecommissioned, 500, 180000);
+  }
+
   @Test(timeout = 900000)
   public void testUnsafeWriteRelievedReclaimedDecommissionedAndRestarted()
       throws Exception {
@@ -450,12 +558,7 @@ public class TestErasureCodingPlacementEndToEnd {
       hosts[i] = "host-" + racks[i].substring(1) + i;
     }
     HdfsConfiguration conf = newConf();
-    cluster = new MiniDFSCluster.Builder(conf).racks(racks).hosts(hosts)
-        .numDataNodes(racks.length).build();
-    cluster.waitActive();
-    fs = cluster.getFileSystem();
-    fs.enableErasureCodingPolicy(ecPolicy.getName());
-    fs.setErasureCodingPolicy(new Path("/"), ecPolicy.getName());
+    startCluster(conf, racks, hosts);
 
     // 4 full block groups plus a partial one.
     final Path file = new Path("/ec-file");
@@ -464,22 +567,10 @@ public class TestErasureCodingPlacementEndToEnd {
     DFSTestUtil.writeFile(fs, file, data);
     assertReadable(file, data, "after write");
 
-    NoLossMonitor monitor = new NoLossMonitor(file);
+    DurabilityMonitor monitor = new DurabilityMonitor(file);
     monitor.start();
 
-    // The scenario is only meaningful if some group starts unsafe.
-    boolean anyUnsafe = false;
-    cluster.getNamesystem().readLock();
-    try {
-      for (BlockInfoStriped g : groups(file)) {
-        if (!status(g, liveCopies(g), -1, -1).isPlacementPolicySatisfied()) {
-          anyUnsafe = true;
-        }
-      }
-    } finally {
-      cluster.getNamesystem().readUnlock();
-    }
-    assertTrue("expected a group to start unsafely placed", anyUnsafe);
+    assertSomeGroupStartsUnsafe(file);
 
     // Hold back excess processing (it postpones blocks with a replica on a
     // storage whose contents are stale) so every relief copy lands before any
@@ -487,54 +578,9 @@ public class TestErasureCodingPlacementEndToEnd {
     // the startup/failover scan does for already over-replicated groups.
     setContentsStale(true);
 
-    // Grow /a and /c so relief copies have somewhere to go.
-    cluster.startDataNodes(conf, 6, true, null,
-        new String[] {"/a", "/a", "/a", "/c", "/c", "/c"},
-        new String[] {"host-a10", "host-a11", "host-a12", "host-c13",
-            "host-c14", "host-c15"}, null, false);
-    cluster.waitActive();
-
-    final AtomicReference<String> pending = new AtomicReference<>();
-    try {
-      GenericTestUtils.waitFor(() -> {
-        cluster.getNamesystem().readLock();
-        try {
-          for (BlockInfoStriped g : groups(file)) {
-            Map<Integer, List<String>> copies = liveCopies(g);
-            if (copies.size() != g.getRealTotalBlockNum()
-                || bm().pendingReconstruction.getNumReplicas(g) > 0
-                || !status(g, copies, -1, -1).isPlacementPolicySatisfied()) {
-              pending.set(g + " " + copies);
-              return false;
-            }
-          }
-          return true;
-        } finally {
-          cluster.getNamesystem().readUnlock();
-        }
-      }, 500, 180000);
-    } catch (Exception e) {
-      throw new AssertionError("relief did not complete: " + pending.get(), e);
-    }
-    int multiDuplicateGroups = 0;
-    cluster.getNamesystem().readLock();
-    try {
-      for (BlockInfoStriped g : groups(file)) {
-        int duplicated = 0;
-        for (List<String> racksOfIndex : liveCopies(g).values()) {
-          if (racksOfIndex.size() > 1) {
-            duplicated++;
-          }
-        }
-        if (duplicated > 1) {
-          multiDuplicateGroups++;
-        }
-      }
-    } finally {
-      cluster.getNamesystem().readUnlock();
-    }
-    assertTrue("expected groups holding several duplicates before reclaiming",
-        multiDuplicateGroups > 0);
+    growCluster(conf);
+    waitUntil("relief did not complete", () -> firstGroupWithoutRelief(file));
+    assertSomeGroupHoldsSeveralDuplicates(file);
     assertReadable(file, data, "after relief, before reclaim");
 
     // Every group is now safely placed. From here on, reclaiming (and
@@ -550,24 +596,7 @@ public class TestErasureCodingPlacementEndToEnd {
 
     // Decommission the original /a node, which held the only /a copy of every
     // group before the cluster grew.
-    DataNode original = null;
-    for (DataNode dn : cluster.getDataNodes()) {
-      if (dn.getDatanodeId().getHostName().equals(hosts[0])) {
-        original = dn;
-      }
-    }
-    assertNotNull(original);
-    DatanodeManager dm = bm().getDatanodeManager();
-    final DatanodeDescriptor decom = dm.getDatanode(original.getDatanodeId());
-    DatanodeAdminManager admin = (DatanodeAdminManager)
-        Whitebox.getInternalState(dm, "datanodeAdminManager");
-    cluster.getNamesystem().writeLock();
-    try {
-      admin.startDecommission(decom);
-    } finally {
-      cluster.getNamesystem().writeUnlock();
-    }
-    GenericTestUtils.waitFor(decom::isDecommissioned, 500, 180000);
+    decommissionNodeOnHost(hosts[0]);
     waitUntilSettled(file, "after decommission");
     assertReadable(file, data, "after decommission");
 
@@ -578,7 +607,7 @@ public class TestErasureCodingPlacementEndToEnd {
     cluster.restartNameNode(true);
     cluster.waitActive();
     fs = cluster.getFileSystem();
-    monitor = new NoLossMonitor(file);
+    monitor = new DurabilityMonitor(file);
     monitor.start();
     GenericTestUtils.waitFor(() -> !cluster.getNamesystem().isInSafeMode(),
         500, 60000);
