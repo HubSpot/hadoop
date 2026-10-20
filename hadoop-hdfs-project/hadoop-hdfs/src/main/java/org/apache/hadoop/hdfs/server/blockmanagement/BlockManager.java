@@ -4191,11 +4191,12 @@ public class BlockManager implements BlockStatsMXBean {
       if (neededReconstruction.add(block, numCurrentReplica,
           num.readOnlyReplicas(), num.outOfServiceReplicas(),
           expectedRedundancy)) {
-        // An erasure-coded group over-concentrated on one failure domain can
-        // also hold duplicate internal blocks that protect nothing. Go on to
-        // reclaim those, so the reconstruction has room for its copy.
-        if (!block.isStriped()
-            || !shouldProcessExtraRedundancy(num, expectedRedundancy)) {
+        // An over-concentrated erasure-coded group can also hold duplicate
+        // internal blocks that protect nothing; reclaim those too so the
+        // reconstruction has room for its copy.
+        final boolean alsoReclaimsExcess = block.isStriped()
+            && shouldProcessExtraRedundancy(num, expectedRedundancy);
+        if (!alsoReclaimsExcess) {
           return MisReplicationResult.UNDER_REPLICATED;
         }
       }
@@ -4451,13 +4452,8 @@ public class BlockManager implements BlockStatsMXBean {
       List<DatanodeStorageInfo> candidates, List<StorageType> excessTypes,
       BlockPlacementPolicyErasureCoding placementPolicy, long gracePeriodMs) {
     while (candidates.size() > 1) {
-      List<DatanodeStorageInfo> reclaimable = new ArrayList<>();
-      for (DatanodeStorageInfo candidate : candidates) {
-        if (!removalWouldReduceSafety(sblk, nonExcess, candidate,
-            placementPolicy)) {
-          reclaimable.add(candidate);
-        }
-      }
+      List<DatanodeStorageInfo> reclaimable =
+          reclaimableCopies(sblk, nonExcess, candidates, placementPolicy);
       if (reclaimable.isEmpty()) {
         LOG.debug("Keeping {} copies of an internal block of {} on {}: each"
             + " protects the group's placement", candidates.size(), sblk,
@@ -4488,6 +4484,27 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   /**
+   * The {@code candidates} (copies of one internal block) that can be removed
+   * without making the erasure-coded placement of the group less safe.
+   */
+  private List<DatanodeStorageInfo> reclaimableCopies(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> nonExcess,
+      List<DatanodeStorageInfo> candidates,
+      BlockPlacementPolicyErasureCoding placementPolicy) {
+    final BlockPlacementStatusErasureCoding current = placementStatus(sblk,
+        new ArrayList<>(nonExcess), placementPolicy);
+    final List<DatanodeStorageInfo> reclaimable = new ArrayList<>();
+    for (DatanodeStorageInfo candidate : candidates) {
+      final BlockPlacementStatusErasureCoding without = placementStatus(sblk,
+          withoutStorage(nonExcess, candidate), placementPolicy);
+      if (!without.isLessSafeThan(current)) {
+        reclaimable.add(candidate);
+      }
+    }
+    return reclaimable;
+  }
+
+  /**
    * Whether removing {@code excluded} from the group's live storages would make
    * the erasure-coded placement less safe: the group would occupy fewer of the
    * failure domains it should, or more internal blocks would be at risk of a
@@ -4498,23 +4515,24 @@ public class BlockManager implements BlockStatsMXBean {
   private boolean removalWouldReduceSafety(BlockInfoStriped sblk,
       Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
       BlockPlacementPolicyErasureCoding placementPolicy) {
-    BlockPlacementStatusErasureCoding withCopy =
-        ecPlacementStatus(sblk, nonExcess, null, placementPolicy);
-    BlockPlacementStatusErasureCoding withoutCopy =
-        ecPlacementStatus(sblk, nonExcess, excluded, placementPolicy);
-    return withoutCopy.isLessSafeThan(withCopy);
+    final BlockPlacementStatusErasureCoding current = placementStatus(sblk,
+        new ArrayList<>(nonExcess), placementPolicy);
+    final BlockPlacementStatusErasureCoding without = placementStatus(sblk,
+        withoutStorage(nonExcess, excluded), placementPolicy);
+    return without.isLessSafeThan(current);
   }
 
-  /**
-   * The EC placement status of the group backed by {@code nonExcess},
-   * optionally ignoring the {@code excluded} storage.
-   */
-  private BlockPlacementStatusErasureCoding ecPlacementStatus(
-      BlockInfoStriped sblk,
-      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
+  private static List<DatanodeStorageInfo> withoutStorage(
+      Collection<DatanodeStorageInfo> storages, DatanodeStorageInfo excluded) {
+    final List<DatanodeStorageInfo> remaining = new ArrayList<>(storages);
+    remaining.remove(excluded);
+    return remaining;
+  }
+
+  /** The EC placement status of the group backed by {@code storages}. */
+  private BlockPlacementStatusErasureCoding placementStatus(
+      BlockInfoStriped sblk, List<DatanodeStorageInfo> storages,
       BlockPlacementPolicyErasureCoding placementPolicy) {
-    final List<DatanodeStorageInfo> storages = new ArrayList<>(nonExcess);
-    storages.remove(excluded);
     return placementPolicy.verifyPlacement(domainsOf(storages),
         indicesOf(sblk, storages), sblk.getRealTotalBlockNum(),
         sblk.getParityBlockNum());
