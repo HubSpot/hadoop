@@ -52,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
@@ -4398,11 +4399,23 @@ public class BlockManager implements BlockStatsMXBean {
         DatanodeStorageInfo.getDatanodeStorageInfo(nonExcess, delNodeHint.getDatanode());
     if (delStorageHint != null) {
       Integer index = storage2index.get(delStorageHint);
-      if (index != null && duplicated.get(index)
-          && !removalWouldReduceSafety(sblk, nonExcess, delStorageHint,
-              placementPolicy)) {
-        processChosenExcessRedundancy(nonExcess, delStorageHint, delNodeHint.getGracePeriod(), storedBlock);
-        logEmptyExcessType = false;
+      if (index != null && duplicated.get(index)) {
+        if (!removalWouldReduceSafety(sblk, nonExcess, delStorageHint,
+            placementPolicy)) {
+          processChosenExcessRedundancy(nonExcess, delStorageHint, delNodeHint.getGracePeriod(), storedBlock);
+          logEmptyExcessType = false;
+        } else {
+          // The hint usually names the source of a Balancer or Mover move. The
+          // move put this group's placement at risk, so the source copy is kept
+          // and the copy at the target may be reclaimed instead, undoing the
+          // move.
+          LOG.info("Not deleting hinted copy of internal block {} of {} on {}"
+                  + " in {}: removing it would make the group's placement less"
+                  + " safe. Copies of the group by domain: {}", index, sblk,
+              delStorageHint, delStorageHint.getDatanodeDescriptor()
+                  .getNetworkLocation(), describeCopiesByDomain(sblk,
+                  nonExcess));
+        }
       }
     }
 
@@ -4518,6 +4531,24 @@ public class BlockManager implements BlockStatsMXBean {
     return placementPolicy.verifyPlacement(domainsOf(storages),
         indicesOf(sblk, storages), sblk.getRealTotalBlockNum(),
         sblk.getParityBlockNum());
+  }
+
+  /**
+   * The internal-block indices of {@code sblk} held in each failure domain,
+   * for logging, e.g. {@code {/rack0=[0, 1, 2], /rack1=[2, 3, 4]}}.
+   */
+  private static String describeCopiesByDomain(BlockInfoStriped sblk,
+      Collection<DatanodeStorageInfo> storages) {
+    final Map<String, List<Byte>> byDomain = new TreeMap<>();
+    for (DatanodeStorageInfo storage : storages) {
+      byDomain.computeIfAbsent(
+          storage.getDatanodeDescriptor().getNetworkLocation(),
+          k -> new ArrayList<>()).add(sblk.getStorageBlockIndex(storage));
+    }
+    for (List<Byte> indices : byDomain.values()) {
+      Collections.sort(indices);
+    }
+    return byDomain.toString();
   }
 
   private void processChosenExcessRedundancy(
