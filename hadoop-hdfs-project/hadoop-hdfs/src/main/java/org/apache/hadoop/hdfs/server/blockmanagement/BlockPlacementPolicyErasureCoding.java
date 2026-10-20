@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -155,6 +156,25 @@ public class BlockPlacementPolicyErasureCoding
       }
     }
     return soleCopies;
+  }
+
+  /** The failure domain of each of {@code storages}. */
+  static String[] domainsOf(List<DatanodeStorageInfo> storages) {
+    final String[] domains = new String[storages.size()];
+    for (int i = 0; i < domains.length; i++) {
+      domains[i] = storages.get(i).getDatanodeDescriptor().getNetworkLocation();
+    }
+    return domains;
+  }
+
+  /** The internal-block index of {@code block} each of {@code storages} holds. */
+  static byte[] indicesOf(BlockInfoStriped block,
+      List<DatanodeStorageInfo> storages) {
+    final byte[] indices = new byte[storages.size()];
+    for (int i = 0; i < indices.length; i++) {
+      indices[i] = (byte) block.getStorageBlockIndex(storages.get(i));
+    }
+    return indices;
   }
 
   /**
