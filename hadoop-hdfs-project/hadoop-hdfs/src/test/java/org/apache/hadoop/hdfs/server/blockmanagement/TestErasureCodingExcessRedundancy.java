@@ -406,7 +406,7 @@ public class TestErasureCodingExcessRedundancy {
     assertTrue(reclaimAndVerify(sblk, "3/6/3").size() < 12);
   }
 
-  /** Two copies in the same rack protect nothing; exactly one is reclaimed. */
+  /** Extra copies in the same rack protect nothing; all but one are reclaimed. */
   @Test
   public void testSameRackDuplicateReclaimedButNeverTheLastCopy() {
     List<Copy> copies = new ArrayList<>();
