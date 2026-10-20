@@ -236,48 +236,88 @@ public class TestErasureCodingExcessRedundancy {
     bm.processMisReplicatedBlock(sblk);
   }
 
+  /** Every replica of {@code sblk}, whether or not excess handling may use it. */
+  private List<Copy> allCopies(BlockInfoStriped sblk) {
+    List<Copy> all = new ArrayList<>();
+    for (DatanodeStorageInfo s : bm.blocksMap.getStorages(sblk)) {
+      all.add(new Copy(s.getDatanodeDescriptor(),
+          sblk.getStorageBlockIndex(s)));
+    }
+    return all;
+  }
+
+  private static int copiesOfIndex(List<Copy> copies, int index) {
+    int count = 0;
+    for (Copy copy : copies) {
+      if (copy.index == index) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   /**
    * Run excess handling on {@code sblk} and check every durability and
    * completeness invariant against its state beforehand.
    */
   private List<Copy> reclaimAndVerify(BlockInfoStriped sblk, String context) {
     final List<Copy> before = liveCopies(sblk);
-    final List<Copy> allBefore = new ArrayList<>();
-    for (DatanodeStorageInfo s : bm.blocksMap.getStorages(sblk)) {
-      allBefore.add(new Copy(s.getDatanodeDescriptor(),
-          sblk.getStorageBlockIndex(s)));
-    }
+    final List<Copy> allBefore = allCopies(sblk);
 
     reclaim(sblk);
     final List<Copy> after = liveCopies(sblk);
     final String ctx = context + " before=" + before + " after=" + after;
 
-    // Nothing other than an in-service copy may ever be marked excess.
+    assertOnlyInServiceCopiesMarkedExcess(sblk, allBefore, ctx);
+    assertTrue(ctx, after.size() <= before.size());
+    assertNoIndexLost(before, after, ctx);
+    assertNotLessSafe(sblk, before, after, ctx);
+    assertRackLossSurvivalKept(sblk, before, after, ctx);
+    assertNothingReclaimableLeft(sblk, after, ctx);
+
+    reclaim(sblk);
+    assertEquals("a second pass reclaimed more: " + ctx, after.size(),
+        liveCopies(sblk).size());
+    return after;
+  }
+
+  /** Nothing other than an in-service copy may ever be marked excess. */
+  private void assertOnlyInServiceCopiesMarkedExcess(BlockInfoStriped sblk,
+      List<Copy> allBefore, String ctx) {
     for (Copy copy : allBefore) {
       if (!copy.node.isInService()) {
         assertFalse("a leaving-service copy was marked excess: " + ctx,
             bm.isExcess(copy.node, sblk));
       }
     }
-    // Only copies that were live beforehand can remain, and nothing is added.
-    assertTrue(ctx, after.size() <= before.size());
+  }
 
-    // 1. No internal block loses its last live copy.
+  /** No internal block loses its last live copy. */
+  private void assertNoIndexLost(List<Copy> before, List<Copy> after,
+      String ctx) {
     assertEquals("an internal block lost its last live copy: " + ctx,
         indices(before), indices(after));
+  }
 
-    // 2. Never less safe by the policy's own measure.
-    BlockPlacementStatusErasureCoding sBefore = status(sblk, before);
-    BlockPlacementStatusErasureCoding sAfter = status(sblk, after);
+  /** Never less safe by the policy's own measure. */
+  private void assertNotLessSafe(BlockInfoStriped sblk, List<Copy> before,
+      List<Copy> after, String ctx) {
+    BlockPlacementStatusErasureCoding statusBefore = status(sblk, before);
+    BlockPlacementStatusErasureCoding statusAfter = status(sblk, after);
     assertFalse("reclaiming made placement less safe: " + ctx,
-        sAfter.isLessSafeThan(sBefore));
-    if (sBefore.isPlacementPolicySatisfied()) {
+        statusAfter.isLessSafeThan(statusBefore));
+    if (statusBefore.isPlacementPolicySatisfied()) {
       assertTrue("a satisfied group became unsatisfied: " + ctx,
-          sAfter.isPlacementPolicySatisfied());
+          statusAfter.isPlacementPolicySatisfied());
     }
+  }
 
-    // 3. Policy-independent check: for every rack, if the group could be
-    //    reconstructed after losing that rack beforehand, it still can.
+  /**
+   * Policy-independent: for every rack, if the group could be reconstructed
+   * after losing that rack beforehand, it still can.
+   */
+  private void assertRackLossSurvivalKept(BlockInfoStriped sblk,
+      List<Copy> before, List<Copy> after, String ctx) {
     final int needed = sblk.getRealDataBlockNum();
     for (String rack : inService.keySet()) {
       if (survivorsOfRackLoss(before, rack) >= needed) {
@@ -285,31 +325,21 @@ public class TestErasureCodingExcessRedundancy {
             survivorsOfRackLoss(after, rack) >= needed);
       }
     }
+  }
 
-    // 4. Nothing reclaimable is left behind: every remaining duplicate copy
-    //    protects the group.
+  /** Every remaining duplicate copy protects the group. */
+  private void assertNothingReclaimableLeft(BlockInfoStriped sblk,
+      List<Copy> after, String ctx) {
+    BlockPlacementStatusErasureCoding statusAfter = status(sblk, after);
     for (int i = 0; i < after.size(); i++) {
-      final int index = after.get(i).index;
-      int copiesOfIndex = 0;
-      for (Copy c : after) {
-        if (c.index == index) {
-          copiesOfIndex++;
-        }
-      }
-      if (copiesOfIndex < 2) {
+      if (copiesOfIndex(after, after.get(i).index) < 2) {
         continue;
       }
       List<Copy> without = new ArrayList<>(after);
       without.remove(i);
       assertTrue("a reclaimable copy " + after.get(i) + " was left: " + ctx,
-          status(sblk, without).isLessSafeThan(sAfter));
+          status(sblk, without).isLessSafeThan(statusAfter));
     }
-
-    // 5. Idempotent: a second pass reclaims nothing more.
-    reclaim(sblk);
-    assertEquals("a second pass reclaimed more: " + ctx, after.size(),
-        liveCopies(sblk).size());
-    return after;
   }
 
   private List<Copy> place(String rack, int... indices) {
@@ -406,7 +436,7 @@ public class TestErasureCodingExcessRedundancy {
     assertTrue(reclaimAndVerify(sblk, "3/6/3").size() < 12);
   }
 
-  /** Two copies in the same rack protect nothing; exactly one is reclaimed. */
+  /** Extra copies in the same rack protect nothing; all but one are reclaimed. */
   @Test
   public void testSameRackDuplicateReclaimedButNeverTheLastCopy() {
     List<Copy> copies = new ArrayList<>();
