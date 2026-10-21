@@ -2358,9 +2358,14 @@ public class BlockManager implements BlockStatsMXBean {
       for (int i = 0; i < excludeReconstructed.size(); i++) {
         excludeReconstructedIndices[i] = excludeReconstructed.get(i);
       }
-      return new ErasureCodingWork(getBlockPoolId(), block, bc, newSrcNodes,
-          containingNodes, liveReplicaNodes, additionalReplRequired,
-          priority, newIndices, busyIndices, excludeReconstructedIndices);
+      final ErasureCodingWork ecWork = new ErasureCodingWork(getBlockPoolId(),
+          block, bc, newSrcNodes, containingNodes, liveReplicaNodes,
+          additionalReplRequired, priority, newIndices, busyIndices,
+          excludeReconstructedIndices);
+      if (numReplicas.liveReplicas() >= requiredRedundancy) {
+        ecWork.setPlacementOnly();
+      }
+      return ecWork;
     } else {
       return new ReplicationWork(block, bc, srcNodes,
           containingNodes, liveReplicaNodes, additionalReplRequired,
