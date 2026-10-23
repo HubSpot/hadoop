@@ -4666,7 +4666,8 @@ public class BlockManager implements BlockStatsMXBean {
               (byte) blockStriped.getStorageBlockIndex(locations.get(i));
         }
         results.add(new StripedBlockWithLocations(blkWithLocs, indices,
-            blockStriped.getDataBlockNum(), blockStriped.getCellSize()));
+            blockStriped.getDataBlockNum(), blockStriped.getCellSize(),
+            blockStriped.getParityBlockNum()));
         // approximate size
         return block.getNumBytes() / blockStriped.getDataBlockNum();
       }else{

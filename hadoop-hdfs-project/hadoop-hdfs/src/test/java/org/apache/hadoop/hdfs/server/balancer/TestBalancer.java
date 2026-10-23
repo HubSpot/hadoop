@@ -65,8 +65,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
 import java.util.Set;
@@ -104,8 +106,10 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.server.balancer.Balancer.Cli;
 import org.apache.hadoop.hdfs.server.balancer.Balancer.Result;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
@@ -1821,6 +1825,124 @@ public class TestBalancer {
 
     } finally {
       cluster.shutdown();
+    }
+  }
+
+  /**
+   * RS-6-3 groups are spread 3/3/3 over three racks, so every rack is exactly
+   * at its loss budget, and an empty node joins one rack. Moving an internal
+   * block onto it from another rack would leave its rack holding 4 sole
+   * copies; the NameNode reverts such a move, so the Balancer must only fill
+   * it from its own rack, and must finish without endless retries.
+   */
+  @Test(timeout = 300000)
+  public void testBalancerRespectsErasureCodedPlacement() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    initConfWithStripe(conf);
+    final String[] rackNames = {"/rack0", "/rack1", "/rack2"};
+    final int nodesPerRack = 3;
+    final int numOfDatanodes = rackNames.length * nodesPerRack;
+    final long capacity = 20 * defaultBlockSize;
+    final long[] capacities = new long[numOfDatanodes];
+    Arrays.fill(capacities, capacity);
+    final String[] racks = new String[numOfDatanodes];
+    for (int i = 0; i < numOfDatanodes; i++) {
+      racks[i] = rackNames[i % rackNames.length];
+    }
+    cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(numOfDatanodes)
+        .racks(racks)
+        .simulatedCapacities(capacities)
+        .build();
+    final GenericTestUtils.LogCapturer nnLogs =
+        GenericTestUtils.LogCapturer.captureLogs(BlockManager.LOG);
+    try {
+      cluster.waitActive();
+      client = NameNodeProxies.createProxy(conf,
+          cluster.getFileSystem(0).getUri(), ClientProtocol.class).getProxy();
+      client.enableErasureCodingPolicy(ecPolicy.getName());
+      client.setErasureCodingPolicy("/", ecPolicy.getName());
+
+      long totalCapacity = sum(capacities);
+      final long fileLen = totalCapacity * 3 / 10;
+      final long totalUsedSpace = fileLen * groupSize / dataBlocks;
+      DFSTestUtil.createFile(cluster.getFileSystem(0), filePath, fileLen,
+          (short) 3, r.nextLong());
+      assertErasureCodedPlacementSafe(fileLen);
+
+      cluster.startDataNodes(conf, 1, true, null,
+          new String[]{rackNames[0]}, null, new long[]{capacity});
+      totalCapacity += capacity;
+      cluster.triggerHeartbeats();
+      final DataNode newNode =
+          cluster.getDataNodes().get(cluster.getDataNodes().size() - 1);
+
+      // The new node can only take blocks from the other nodes of its rack,
+      // so the cluster as a whole cannot reach the default threshold.
+      final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
+      waitForHeartBeat(totalUsedSpace, totalCapacity, client, cluster);
+      final int exitCode = runBalancer(namenodes, BalancerParameters.DEFAULT,
+          conf);
+      assertTrue("Unexpected balancer exit code " + exitCode,
+          exitCode == ExitStatus.SUCCESS.getExitCode()
+              || exitCode == ExitStatus.NO_MOVE_BLOCK.getExitCode()
+              || exitCode == ExitStatus.NO_MOVE_PROGRESS.getExitCode());
+
+      cluster.triggerHeartbeats();
+      cluster.triggerDeletionReports();
+      GenericTestUtils.waitFor(() -> {
+        try {
+          cluster.triggerHeartbeats();
+          for (DatanodeInfo dn :
+              client.getDatanodeReport(DatanodeReportType.LIVE)) {
+            if (dn.getDatanodeUuid().equals(newNode.getDatanodeUuid())) {
+              return dn.getDfsUsed() > 0;
+            }
+          }
+          return false;
+        } catch (IOException e) {
+          throw new RuntimeException(e);
+        }
+      }, 500, 60000);
+
+      assertErasureCodedPlacementSafe(fileLen);
+      assertFalse("The NameNode rejected a Balancer move:\n"
+              + nnLogs.getOutput(),
+          nnLogs.getOutput().contains("Not deleting hinted copy"));
+    } finally {
+      nnLogs.stopCapturing();
+      cluster.shutdown();
+    }
+  }
+
+  /**
+   * Assert that no rack holds more internal blocks of any group of
+   * {@link #filePath}, that exist nowhere else, than the scheme can lose.
+   */
+  private void assertErasureCodedPlacementSafe(long fileLen)
+      throws IOException {
+    for (LocatedBlock lb :
+        client.getBlockLocations(fileName, 0, fileLen).getLocatedBlocks()) {
+      final LocatedStripedBlock lsb = (LocatedStripedBlock) lb;
+      final DatanodeInfo[] locs = lsb.getLocations();
+      final byte[] indices = lsb.getBlockIndices();
+      final Map<Byte, Set<String>> racksPerIndex = new HashMap<>();
+      for (int i = 0; i < locs.length; i++) {
+        racksPerIndex.computeIfAbsent(indices[i], k -> new HashSet<>())
+            .add(locs[i].getNetworkLocation());
+      }
+      final Map<String, Integer> soleCopies = new HashMap<>();
+      for (Set<String> rs : racksPerIndex.values()) {
+        if (rs.size() == 1) {
+          soleCopies.merge(rs.iterator().next(), 1, Integer::sum);
+        }
+      }
+      for (Map.Entry<String, Integer> e : soleCopies.entrySet()) {
+        assertTrue(lsb.getBlock() + " has " + e.getValue()
+                + " sole internal blocks on " + e.getKey() + ": "
+                + racksPerIndex,
+            e.getValue() <= parityBlocks);
+      }
     }
   }
 

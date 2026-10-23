@@ -96,9 +96,19 @@ public class BlocksWithLocations {
     final byte[] indices;
     final short dataBlockNum;
     final int cellSize;
+    final short parityBlockNum;
 
     public StripedBlockWithLocations(BlockWithLocations blk, byte[] indices,
          short dataBlockNum, int cellSize) {
+      this(blk, indices, dataBlockNum, cellSize, (short) 0);
+    }
+
+    /**
+     * @param parityBlockNum the number of parity blocks of the group's erasure
+     *          coding policy, or 0 if unknown (e.g. sent by an older NameNode)
+     */
+    public StripedBlockWithLocations(BlockWithLocations blk, byte[] indices,
+         short dataBlockNum, int cellSize, short parityBlockNum) {
       super(blk.getBlock(), blk.getDatanodeUuids(), blk.getStorageIDs(),
           blk.getStorageTypes());
       Preconditions.checkArgument(
@@ -106,6 +116,7 @@ public class BlocksWithLocations {
       this.indices = indices;
       this.dataBlockNum = dataBlockNum;
       this.cellSize = cellSize;
+      this.parityBlockNum = parityBlockNum;
     }
 
     public byte[] getIndices() {
@@ -118,6 +129,11 @@ public class BlocksWithLocations {
 
     public int getCellSize() {
       return cellSize;
+    }
+
+    /** @return the number of parity blocks, or 0 if unknown */
+    public short getParityBlockNum() {
+      return parityBlockNum;
     }
   }
 

@@ -141,6 +141,9 @@ public class Dispatcher implements Closeable {
 
   private final boolean connectToDnViaHostname;
   private BlockPlacementPolicies placementPolicies;
+  private final Configuration conf;
+  /** Checks moves of erasure-coded internal blocks; set by {@link #init}. */
+  private volatile ErasureCodingMoveChecker ecMoveChecker;
 
   private long maxIterationTime;
 
@@ -515,6 +518,16 @@ public class Dispatcher implements Closeable {
     private byte[] indices;
     final short dataBlockNum;
     final int cellSize;
+    /** The parity count of the group's scheme, or 0 if unknown. */
+    private short parityBlockNum;
+    /**
+     * The datanode of every copy of the group as the NameNode reported it,
+     * including copies on datanodes this dispatcher ignores, and the internal
+     * block index of each. The NameNode judges the placement on these, so a
+     * move is checked against them rather than against {@link #locations}.
+     */
+    private String[] placementDatanodeUuids;
+    private byte[] placementIndices;
 
     public DBlockStriped(Block block, byte[] indices, short dataBlockNum,
         int cellSize) {
@@ -522,6 +535,50 @@ public class Dispatcher implements Closeable {
       this.indices = indices;
       this.dataBlockNum = dataBlockNum;
       this.cellSize = cellSize;
+    }
+
+    /**
+     * Set the placement of the group that moves are checked against.
+     *
+     * @param datanodeUuids the datanode of every copy of the group
+     * @param blockIndices the internal block index of each copy
+     * @param parityNum the parity count of the group's scheme, or 0 if unknown
+     */
+    public synchronized void setPlacement(String[] datanodeUuids,
+        byte[] blockIndices, short parityNum) {
+      Preconditions.checkArgument(
+          datanodeUuids.length == blockIndices.length);
+      this.placementDatanodeUuids = datanodeUuids;
+      this.placementIndices = blockIndices;
+      this.parityBlockNum = parityNum;
+    }
+
+    /** Whether the placement moves are checked against is known. */
+    synchronized boolean hasPlacement() {
+      return placementDatanodeUuids != null && parityBlockNum > 0;
+    }
+
+    synchronized String[] getPlacementDatanodeUuids() {
+      return placementDatanodeUuids;
+    }
+
+    synchronized byte[] getPlacementIndices() {
+      return placementIndices;
+    }
+
+    short getParityBlockNum() {
+      return parityBlockNum;
+    }
+
+    /**
+     * The number of internal blocks of the group: a group smaller than one
+     * full stripe has fewer data blocks.
+     */
+    int getRealTotalBlockNum() {
+      final long numBytes = getNumBytes();
+      final int realData = numBytes <= 0 ? dataBlockNum
+          : (int) Math.min(dataBlockNum, (numBytes - 1) / cellSize + 1);
+      return realData + parityBlockNum;
     }
 
     DBlock getInternalBlock(StorageGroup storage) {
@@ -890,9 +947,13 @@ public class Dispatcher implements Closeable {
             block.clearLocations();
 
             if (blkLocs instanceof StripedBlockWithLocations) {
+              final StripedBlockWithLocations sblkLocs =
+                  (StripedBlockWithLocations) blkLocs;
               // EC block may adjust indices before, avoid repeated adjustments
-              ((DBlockStriped) block).setIndices(
-                  ((StripedBlockWithLocations) blkLocs).getIndices());
+              ((DBlockStriped) block).setIndices(sblkLocs.getIndices());
+              ((DBlockStriped) block).setPlacement(
+                  sblkLocs.getDatanodeUuids(), sblkLocs.getIndices(),
+                  sblkLocs.getParityBlockNum());
             }
 
             // update locations
@@ -1124,6 +1185,7 @@ public class Dispatcher implements Closeable {
         HdfsClientConfigKeys.DFS_CLIENT_USE_DN_HOSTNAME,
         HdfsClientConfigKeys.DFS_CLIENT_USE_DN_HOSTNAME_DEFAULT);
     placementPolicies = new BlockPlacementPolicies(conf, null, cluster, null);
+    this.conf = conf;
     this.maxIterationTime = maxIterationTime;
   }
 
@@ -1201,6 +1263,12 @@ public class Dispatcher implements Closeable {
     // create network topology and classify utilization collections:
     // over-utilized, above-average, below-average and under-utilized.
     Collections.shuffle(Arrays.asList(reports));
+    final ErasureCodingMoveChecker checker =
+        new ErasureCodingMoveChecker(conf);
+    for (DatanodeStorageReport r : reports) {
+      checker.addDatanode(r.getDatanodeInfo());
+    }
+    ecMoveChecker = checker;
     for (DatanodeStorageReport r : reports) {
       final DatanodeInfo datanode = r.getDatanodeInfo();
       if (shouldIgnore(datanode)) {
@@ -1424,6 +1492,13 @@ public class Dispatcher implements Closeable {
   // Check if the move will violate the block placement policy.
   private boolean isGoodBlockCandidateForPlacementPolicy(StorageGroup source,
      StorageGroup target, DBlock block) {
+    if (block instanceof DBlockStriped) {
+      final Boolean movable = isMovableStriped(source, target,
+          (DBlockStriped) block);
+      if (movable != null) {
+        return movable;
+      }
+    }
     List<DatanodeInfo> datanodeInfos = new ArrayList<>();
     synchronized (block) {
       for (StorageGroup loc : block.locations) {
@@ -1433,6 +1508,37 @@ public class Dispatcher implements Closeable {
     }
     return placementPolicies.getPolicy(BlockType.CONTIGUOUS).isMovable(
         datanodeInfos, source.getDatanodeInfo(), target.getDatanodeInfo());
+  }
+
+  /**
+   * Whether the NameNode will complete moving an internal block of a striped
+   * group from source to target, applying its erasure-coded placement rule.
+   *
+   * @return null if the move cannot be judged that way (the NameNode did not
+   *         send the parity count, or the placement is not known), in which
+   *         case the rack-count check is used instead
+   */
+  private Boolean isMovableStriped(StorageGroup source, StorageGroup target,
+      DBlockStriped block) {
+    final ErasureCodingMoveChecker checker = ecMoveChecker;
+    final String[] datanodeUuids;
+    final byte[] indices;
+    synchronized (block) {
+      if (checker == null || !block.hasPlacement()) {
+        return null;
+      }
+      datanodeUuids = block.getPlacementDatanodeUuids();
+      indices = block.getPlacementIndices();
+    }
+    final Boolean movable = checker.isMovable(datanodeUuids, indices,
+        block.getRealTotalBlockNum(), block.getParityBlockNum(),
+        source.getDatanodeInfo(), target.getDatanodeInfo());
+    if (Boolean.FALSE.equals(movable)) {
+      LOG.debug("Not moving the internal block of {} on {} to {}: the group's"
+          + " erasure-coded placement would be less safe", block, source,
+          target);
+    }
+    return movable;
   }
 
   /** Reset all fields in order to prepare for the next iteration */
