@@ -178,6 +178,17 @@ abstract class StripeReader {
   void close() {
   }
 
+  /**
+   * HubSpot Edit: whether, with hedging enabled, a chunk without a reader
+   * creates it inside its read task. Only positional reads do: they build new
+   * readers for every read anyway. Stateful reads keep one reader per internal
+   * block for the whole block group, so abandoning a slow creation there would
+   * repeat the creation, and the hedge, on every later stripe of the group.
+   */
+  boolean createsReaderInReadTask() {
+    return false;
+  }
+
   void updateState4SuccessRead(StripingChunkReadResult result) {
     Preconditions.checkArgument(
         result.state == StripingChunkReadResult.SUCCESSFUL);
@@ -344,6 +355,15 @@ abstract class StripeReader {
       return false;
     }
 
+    // HubSpot Edit: with hedging enabled, a positional read's chunk without a
+    // reader creates it inside its read task, so the hedge threshold covers the
+    // connect and the OP_READ_BLOCK handshake. See HubSpotStripedReadHedge.
+    if (readerInfos[chunkIndex] == null && hubSpotHedge.isEnabled()
+        && createsReaderInReadTask()) {
+      submitReadCreatingReader(block, chunkIndex);
+      return true;
+    }
+
     if (readerInfos[chunkIndex] == null) {
       if (!dfsStripedInputStream.createBlockReader(block,
           alignedStripe.getOffsetInBlock(), targetBlocks,
@@ -395,6 +415,60 @@ abstract class StripeReader {
   }
 
   /**
+   * HubSpot Edit: the read for a chunk with no reader yet, creating the reader
+   * inside the task. The reader is created into private arrays and installed
+   * only if no canceller abandoned the read meanwhile. A failure to create one
+   * fails the task, which readStripeImpl handles as a missing chunk, as it does
+   * when readChunk returns false.
+   */
+  private void submitReadCreatingReader(final LocatedBlock block,
+      final int chunkIndex) {
+    final StripingChunk chunk = alignedStripe.chunks[chunkIndex];
+    chunk.state = StripingChunk.PENDING;
+    final CountDownLatch hubSpotDone =
+        hubSpotHedge.trackCompletionOf(chunkIndex);
+    final AtomicBoolean hubSpotClaim = hubSpotHedge.runClaimOf(chunkIndex);
+    final AtomicInteger hubSpotMode = hubSpotHedge.readModeOf(chunkIndex);
+    hubSpotMode.set(HubSpotStripedReadHedge.READ_CREATING);
+    final ByteBufferStrategy[] strategies = getReadStrategies(chunk);
+    final long offsetInBlock = alignedStripe.getOffsetInBlock();
+    final long stripeReadTo = readTo;
+
+    final Callable<BlockReadStats> task = () -> {
+      try {
+        if (!hubSpotClaim.compareAndSet(false, true)) {
+          return null;
+        }
+        final LocatedBlock[] createdTargets =
+            new LocatedBlock[targetBlocks.length];
+        final BlockReaderInfo[] created =
+            new BlockReaderInfo[readerInfos.length];
+        dfsStripedInputStream.createBlockReader(block, offsetInBlock,
+            createdTargets, created, chunkIndex, stripeReadTo);
+        final BlockReaderInfo info = created[chunkIndex];
+        if (!HubSpotStripedReadHedge.finishCreating(hubSpotMode,
+            info != null && info.reader.isShortCircuit())) {
+          dfsStripedInputStream.closeReader(info);
+          return null;
+        }
+        if (info == null) {
+          throw new IOException("Could not create a block reader for chunk "
+              + chunkIndex + " of " + block.getBlock());
+        }
+        targetBlocks[chunkIndex] = createdTargets[chunkIndex];
+        readerInfos[chunkIndex] = info;
+        return readCells(info.reader, info.datanode, info.blockReaderOffset,
+            offsetInBlock, strategies, block, chunkIndex, hubSpotMode).call();
+      } finally {
+        hubSpotDone.countDown();
+      }
+    };
+
+    Future<BlockReadStats> request = service.submit(task);
+    futures.put(request, chunkIndex);
+  }
+
+  /**
    * read the whole stripe. do decoding if necessary
    */
   void readStripe() throws IOException {
@@ -442,9 +516,7 @@ abstract class StripeReader {
         // extra reads fail we are no worse off. See HubSpotStripedReadHedge.
         if (r.state == StripingChunkReadResult.TIMEOUT) {
           if (hubSpotHedge.markSlowestPending(futures, alignedStripe,
-              parityBlkNum, i -> readerInfos[i] == null
-                  || readerInfos[i].datanode == null
-                  ? null : readerInfos[i].datanode.getDatanodeUuid()) >= 0) {
+              parityBlkNum, this::datanodeUuidOf) >= 0) {
             readDataForDecoding();
             readParityChunks(1);
           }
@@ -471,7 +543,8 @@ abstract class StripeReader {
           returnedChunk.state = StripingChunk.FETCHED;
           alignedStripe.fetchedChunksNum++;
           updateState4SuccessRead(r);
-          if (alignedStripe.fetchedChunksNum == dataBlkNum) {
+          if (alignedStripe.fetchedChunksNum == dataBlkNum
+              || hubSpotHedge.hasReconstructionSet(alignedStripe, dataBlkNum)) {
             // HubSpot Edit: phase 2 of the hedge. A complete reconstruction
             // set is in hand without the hedged stragglers, so -- and only at
             // this point -- it is safe to stop waiting on them. Any that will
@@ -481,6 +554,12 @@ abstract class StripeReader {
               alignedStripe.chunks[idx].state = StripingChunk.MISSING;
               alignedStripe.missingChunksNum++;
               dfsStripedInputStream.closeReader(readerInfos[idx]);
+              // The stopped read may have finished, or partly filled its
+              // decode buffer, before it saw the cancel; that buffer is now
+              // this chunk's decode output and must be its full length again.
+              if (decodeInputs != null && decodeInputs[idx] != null) {
+                decodeInputs[idx].getBuffer().clear();
+              }
             }
             if (hubSpotHedge.hasOutstandingHedges(futures, alignedStripe)) {
               // A straggler would not stop; keep waiting for it rather than
@@ -592,6 +671,24 @@ abstract class StripeReader {
 
     int[] erasedIndices = Arrays.copyOf(decodeIndices, pos);
     return erasedIndices;
+  }
+
+  /**
+   * HubSpot Edit: the DataNode serving {@code chunkIndex}, for the hedge
+   * throttler. A read still creating its reader has none yet, so fall back to
+   * the internal block's location, which is its only one.
+   */
+  private String datanodeUuidOf(int chunkIndex) {
+    final BlockReaderInfo info = readerInfos[chunkIndex];
+    if (info != null && info.datanode != null) {
+      return info.datanode.getDatanodeUuid();
+    }
+    final LocatedBlock block = targetBlocks[chunkIndex];
+    if (block == null || block.getLocations() == null
+        || block.getLocations().length == 0) {
+      return null;
+    }
+    return block.getLocations()[0].getDatanodeUuid();
   }
 
   void clearFutures() {

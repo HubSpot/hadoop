@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -222,6 +223,13 @@ public class TestHubSpotStripedReadHedge {
     c.setInt(HubSpotStripedReadHedgeThrottler.MAX_HEDGES_PER_SECOND_KEY,
         10_000);
     return new HubSpotStripedReadHedgeThrottler(c);
+  }
+
+  /** Marks {@code chunkIndex} as creating its reader inside its read task. */
+  private static AtomicInteger creating(Fixture f, int chunkIndex) {
+    AtomicInteger mode = f.hedge.readModeOf(chunkIndex);
+    mode.set(HubSpotStripedReadHedge.READ_CREATING);
+    return mode;
   }
 
   @Test
@@ -577,6 +585,131 @@ public class TestHubSpotStripedReadHedge {
     assertTrue(f.byIndex.get(loser).interruptRequested);
     assertFalse("a reconnect after this point must refuse the local reader",
         HubSpotStripedReadHedge.switchToLocal(f.hedge.readModeOf(loser)));
+  }
+
+  /**
+   * A straggler still creating its block reader -- a DataNode that will not
+   * accept the connection -- has touched no buffer and no shared reader, so it
+   * is retired at once without being interrupted, and can then never install
+   * its reader.
+   */
+  @Test
+  public void testStragglerStillCreatingItsReaderIsRetiredWithoutWaiting() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2);
+    AtomicInteger mode = creating(f, 2);
+    f.readTaskStarts(2);
+    assertEquals(2, f.mark());
+
+    long start = Time.monotonicNow();
+    assertEquals(Collections.singletonList(2), f.retire());
+    assertTrue("must not wait out the 50ms quiesce timeout",
+        Time.monotonicNow() - start < 50);
+    assertTrue(f.byIndex.get(2).cancelled);
+    assertFalse("a reader still being created must never be interrupted",
+        f.byIndex.get(2).interruptRequested);
+    assertTrue(f.hedge.isRetired(2));
+    assertEquals(1, lastMetrics.getHedgedReadWins());
+    assertFalse("the task must not install its reader once abandoned",
+        HubSpotStripedReadHedge.finishCreating(mode, false));
+  }
+
+  /** Once it has created its reader, a straggler is retired like any other. */
+  @Test(timeout = 10000)
+  public void testStragglerThatCreatedItsReaderIsInterruptedAndWaitedFor() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2);
+    AtomicInteger mode = creating(f, 2);
+    f.readTaskStarts(2);
+    assertTrue(HubSpotStripedReadHedge.finishCreating(mode, false));
+    assertEquals(2, f.mark());
+    f.readTaskExitsAfter(2, 20);
+
+    assertEquals(Collections.singletonList(2), f.retire());
+    assertTrue("a remote read is interrupted as before",
+        f.byIndex.get(2).interruptRequested);
+  }
+
+  /**
+   * A task that created a short-circuit reader leaves creation as a local
+   * read, so it is neither hedged nor interrupted.
+   */
+  @Test
+  public void testShortCircuitReaderCreatedInTheTaskIsNotInterrupted() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2);
+    AtomicInteger mode = creating(f, 2);
+    f.readTaskStarts(2);
+    assertTrue(HubSpotStripedReadHedge.finishCreating(mode, true));
+
+    assertEquals("a short-circuit read must not be hedged", -1, f.mark());
+    assertTrue(f.retire().isEmpty());
+    assertFalse(f.byIndex.get(2).cancelled);
+  }
+
+  /**
+   * A stripe that never hedged can still end with a read creating its reader,
+   * for example on an error exit. It is abandoned so it cannot install a reader
+   * or write a buffer after the stripe returns, and is not waited for.
+   */
+  @Test
+  public void testStopOutstandingReadsAbandonsReaderCreationWithoutAHedge() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    AtomicInteger mode = creating(f, 2);
+    f.readTaskStarts(2);
+
+    long start = Time.monotonicNow();
+    assertEquals(Collections.singletonList(2), f.stop());
+    assertTrue("must not wait for the creation to finish",
+        Time.monotonicNow() - start < 50);
+    assertTrue(f.byIndex.get(2).cancelled);
+    assertFalse(f.byIndex.get(2).interruptRequested);
+    assertFalse("the task must not install its reader once abandoned",
+        HubSpotStripedReadHedge.finishCreating(mode, false));
+    assertFalse("reads with a reader of their own are left as upstream would",
+        f.byIndex.get(6).cancelled);
+  }
+
+  /** In a stripe that hedged, a creation is abandoned, not waited for. */
+  @Test
+  public void testStopOutstandingReadsAbandonsReaderCreationAfterAHedge() {
+    Fixture f = new Fixture(hedge(THRESHOLD), 2, 6);
+    int hedgedIndex = f.mark();
+    int loser = hedgedIndex == 2 ? 6 : 2;
+    AtomicInteger mode = creating(f, loser);
+    f.hedgedChunkCompletes(hedgedIndex);
+    f.readTaskStarts(loser);
+
+    long start = Time.monotonicNow();
+    assertEquals(Collections.singletonList(loser), f.stop());
+    assertTrue("must not wait out the 50ms quiesce timeout",
+        Time.monotonicNow() - start < 50);
+    assertFalse(f.byIndex.get(loser).interruptRequested);
+    assertFalse(HubSpotStripedReadHedge.finishCreating(mode, false));
+  }
+
+  /**
+   * In the partial last stripe of a block group, the data cells past the end
+   * of the file are ALLZERO and never read, so only fetched chunks plus those
+   * can complete the reconstruction set. Without counting them a hedged
+   * straggler could never be retired; a stripe that never hedged keeps
+   * upstream's exit.
+   */
+  @Test
+  public void testAllZeroChunksCompleteTheReconstructionSetOnlyAfterAHedge() {
+    final int dataBlkNum = WIDTH - PARITY;
+    Fixture f = new Fixture(hedge(THRESHOLD), 0);
+    for (int i = 1; i < dataBlkNum; i++) {
+      f.stripe.chunks[i] = new StripingChunk(StripingChunk.ALLZERO);
+    }
+    f.stripe.fetchedChunksNum = 1;
+    assertFalse("a stripe that never hedged keeps upstream's exit",
+        f.hedge.hasReconstructionSet(f.stripe, dataBlkNum));
+
+    assertEquals(0, f.mark());
+    assertTrue("one fetched parity plus the ALLZERO cells is a full set",
+        f.hedge.hasReconstructionSet(f.stripe, dataBlkNum));
+
+    f.stripe.fetchedChunksNum = 0;
+    assertFalse("the ALLZERO cells alone are one short",
+        f.hedge.hasReconstructionSet(f.stripe, dataBlkNum));
   }
 
   // ---------------------------------------------------------------------
