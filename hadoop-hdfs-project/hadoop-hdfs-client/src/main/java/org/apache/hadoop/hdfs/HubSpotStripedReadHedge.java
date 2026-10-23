@@ -119,6 +119,25 @@ import org.slf4j.LoggerFactory;
  * own buffers. A per-chunk read mode makes that decision race-free against a
  * task that reconnects through a short-circuit reader mid-read.
  *
+ * <h2>Creating the block reader inside the read task</h2>
+ *
+ * Upstream creates each chunk's block reader on the calling thread before
+ * submitting its read: the TCP connect, the OP_READ_BLOCK handshake, and on
+ * failure a NameNode re-fetch. A DataNode that will not accept a connection,
+ * or that stalls before sending its response header, therefore holds the read
+ * for the full connect timeout before the hedge can see it. With hedging
+ * enabled, a positional read's chunk that has no reader yet creates one inside
+ * its read task instead, so the threshold covers that time too. Stateful reads
+ * keep the upstream order; see {@code StripeReader#createsReaderInReadTask}.
+ *
+ * <p>Such a task starts in {@link #READ_CREATING} and creates the reader
+ * privately, installing it only after leaving that mode. Until then it has
+ * touched no shared reader state and no buffer, so a canceller that finds it
+ * still creating abandons it without interrupting or waiting: the task closes
+ * what it created and exits. Not interrupting matters here because the reader
+ * may turn out to be a short-circuit one (see below), and nothing can know
+ * that before creation finishes.
+ *
  * <h2>Observability</h2>
  *
  * This reuses the existing {@link DFSHedgedReadMetrics} counters rather than
@@ -381,8 +400,9 @@ class HubSpotStripedReadHedge {
   /**
    * The kind of reader a chunk's read task is using, which decides whether it
    * may be interrupted. Set before the task is submitted and changed only
-   * through {@link #switchToLocal} (task side, on reconnect) and
-   * {@link #beginInterruptibleCancel} (canceller side), so the two cannot race:
+   * through {@link #switchToLocal} and {@link #finishCreating} (task side) and
+   * {@link #beginInterruptibleCancel} and {@link #abandonIfCreating}
+   * (canceller side), so the two cannot race:
    * a task never starts reading through a short-circuit reader once a
    * canceller has decided to interrupt it, and a canceller never interrupts a
    * task that already has.
@@ -390,6 +410,8 @@ class HubSpotStripedReadHedge {
   static final int READ_REMOTE = 0;
   static final int READ_LOCAL = 1;
   static final int READ_CANCELLING = 2;
+  static final int READ_CREATING = 3;
+  static final int READ_ABANDONED = 4;
   private final Map<Integer, AtomicInteger> readMode = new HashMap<>();
 
   /**
@@ -514,9 +536,22 @@ class HubSpotStripedReadHedge {
   }
 
   /**
+   * Canceller side: abandons {@code chunkIndex} if its read task is still
+   * creating its block reader.
+   *
+   * @return true if it was, so the task will never install a reader, read, or
+   *         write a buffer, and need not be interrupted or waited for
+   */
+  private boolean abandonIfCreating(int chunkIndex) {
+    final AtomicInteger mode = readMode.get(chunkIndex);
+    return mode != null && mode.compareAndSet(READ_CREATING, READ_ABANDONED);
+  }
+
+  /**
    * The read mode for {@code chunkIndex}; the caller sets it to
-   * {@link #READ_LOCAL} before submitting a short-circuit read, and hands it to
-   * the task. Call right after {@link #trackCompletionOf}.
+   * {@link #READ_LOCAL} before submitting a short-circuit read, or to
+   * {@link #READ_CREATING} before submitting one that creates its own reader,
+   * and hands it to the task. Call right after {@link #trackCompletionOf}.
    */
   AtomicInteger readModeOf(int chunkIndex) {
     return readMode.get(chunkIndex);
@@ -531,6 +566,18 @@ class HubSpotStripedReadHedge {
   static boolean switchToLocal(AtomicInteger mode) {
     return mode.compareAndSet(READ_REMOTE, READ_LOCAL)
         || mode.get() == READ_LOCAL;
+  }
+
+  /**
+   * Task side: called once a task in {@link #READ_CREATING} has created its
+   * reader, or failed to, and before it installs or reads through it.
+   *
+   * @return false if a canceller abandoned the read, in which case the task
+   *         must close what it created and stop
+   */
+  static boolean finishCreating(AtomicInteger mode, boolean shortCircuit) {
+    return mode.compareAndSet(READ_CREATING,
+        shortCircuit ? READ_LOCAL : READ_REMOTE);
   }
 
   /**
@@ -674,6 +721,30 @@ class HubSpotStripedReadHedge {
   }
 
   /**
+   * Whether a stripe that hedged holds a complete reconstruction set once its
+   * ALLZERO chunks are counted: data cells past the end of the block group,
+   * which decode as zeros without being read. Upstream counts only fetched
+   * chunks, since without a hedge it waits for every read anyway. In the
+   * partial last stripe of a block group that would leave a hedged straggler
+   * unretirable, as the reads that could complete the set do not exist.
+   * Always false for a stripe that never hedged, so upstream's exit is
+   * unchanged there.
+   */
+  boolean hasReconstructionSet(AlignedStripe alignedStripe, int dataBlkNum) {
+    if (hedged.isEmpty()) {
+      return false;
+    }
+    int usable = alignedStripe.fetchedChunksNum;
+    for (int i = 0; i < dataBlkNum; i++) {
+      final StripingChunk chunk = alignedStripe.chunks[i];
+      if (chunk != null && chunk.state == StripingChunk.ALLZERO) {
+        usable++;
+      }
+    }
+    return usable >= dataBlkNum;
+  }
+
+  /**
    * Phase 2. Called once the stripe holds a complete reconstruction set without
    * the hedged chunks. Cancels each hedged straggler and waits for its read
    * task to actually stop running, so that nothing else can write into the
@@ -719,7 +790,8 @@ class HubSpotStripedReadHedge {
         continue;
       }
       final AtomicBoolean claim = claimed.get(index);
-      if (claim != null && claim.compareAndSet(false, true)) {
+      if ((claim != null && claim.compareAndSet(false, true))
+          || abandonIfCreating(index)) {
         entry.getKey().cancel(false);
         retire(index, retired);
         continue;
@@ -800,13 +872,25 @@ class HubSpotStripedReadHedge {
    * buffer that goes back to the pool. Remote losers are interrupted, so this
    * is normally brief; a short-circuit loser is bounded only by its local read.
    *
+   * <p>A read still creating its block reader is abandoned and not waited for,
+   * whether or not the stripe hedged, so it can never install a reader or write
+   * a buffer after the stripe returns.
+   *
    * @return the indices whose reads were outstanding, all now stopped, whose
-   *         readers the caller must discard. Empty if this stripe never hedged.
+   *         readers the caller must discard. Only abandoned reader creations if
+   *         this stripe never hedged.
    */
   List<Integer> stopOutstandingReads(
       Map<Future<BlockReadStats>, Integer> futures) {
     final List<Integer> stopped = new ArrayList<>();
     if (hedged.isEmpty()) {
+      for (Map.Entry<Future<BlockReadStats>, Integer> entry
+          : futures.entrySet()) {
+        if (abandonIfCreating(entry.getValue())) {
+          entry.getKey().cancel(false);
+          stopped.add(entry.getValue());
+        }
+      }
       return stopped;
     }
     for (Map.Entry<Future<BlockReadStats>, Integer> entry
@@ -816,8 +900,9 @@ class HubSpotStripedReadHedge {
         continue;
       }
       final AtomicBoolean claim = claimed.get(index);
-      if (claim != null && claim.compareAndSet(false, true)) {
-        // Never started, and now never will.
+      if ((claim != null && claim.compareAndSet(false, true))
+          || abandonIfCreating(index)) {
+        // Never started, or still creating its reader, and now never will read.
         entry.getKey().cancel(false);
         stopped.add(index);
         continue;
