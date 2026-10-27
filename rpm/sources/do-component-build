@@ -24,6 +24,9 @@ MAVEN_OPTS+="-Drequire.zstd -Dbundle.zstd -Dzstd.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.snappy -Dbundle.snappy=true -Dsnappy.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.isal -Dbundle.isal=true -Disal.lib=/usr/lib64 "
 MAVEN_OPTS+="-Drequire.openssl "
+# Hadoop 3.4 omits the AWS SDK bundle from the distribution by default.
+# Include it in common/lib so S3A works for HBase and other Hadoop clients.
+MAVEN_OPTS+="-Dhadoop-aws-package "
 
 # The Yarn UI and the yarn applications catalog both require a version of node.js which does not work with centos6
 # I've removed -Pyarn-ui, and added the below -pl exclusion in order to get around this incompatibility.
