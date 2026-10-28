@@ -45,6 +45,12 @@ class PositionStripeReader extends StripeReader {
         corruptedBlocks, decoder, dfsStripedInputStream);
   }
 
+  // HubSpot Edit: see StripeReader#createsReaderInReadTask.
+  @Override
+  boolean createsReaderInReadTask() {
+    return true;
+  }
+
   @Override
   void prepareDecodeInputs() {
     if (codingBuffer == null) {
