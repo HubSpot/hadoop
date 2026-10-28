@@ -1124,10 +1124,15 @@ public class DFSInputStream extends FSInputStream
   protected void fetchBlockByteRange(LocatedBlock block, long start, long end,
       ByteBuffer buf, CorruptedBlocks corruptedBlocks)
       throws IOException {
+    fetchBlockByteRange(chooseDataNode(block, null), start, end, buf,
+        corruptedBlocks);
+  }
+
+  private void fetchBlockByteRange(DNAddrPair addressPair, long start, long end,
+      ByteBuffer buf, CorruptedBlocks corruptedBlocks) throws IOException {
     while (true) {
-      DNAddrPair addressPair = chooseDataNode(block, null);
       // Latest block, if refreshed internally
-      block = addressPair.block;
+      LocatedBlock block = addressPair.block;
       try {
         actualGetFromOneDataNode(addressPair, start, end, buf,
             corruptedBlocks);
@@ -1136,6 +1141,7 @@ public class DFSInputStream extends FSInputStream
         checkInterrupted(e); // check if the read has been interrupted
         // Ignore other IOException. Already processed inside the function.
         // Loop through to try the next node.
+        addressPair = chooseDataNode(block, null);
       }
     }
   }
@@ -1268,7 +1274,8 @@ public class DFSInputStream extends FSInputStream
    * time. We then wait on which ever read returns first.
    */
   private void hedgedFetchBlockByteRange(LocatedBlock block, long start,
-      long end, ByteBuffer buf, CorruptedBlocks corruptedBlocks)
+      long end, ByteBuffer buf, CorruptedBlocks corruptedBlocks,
+      DNAddrPair chosenNode)
       throws IOException {
     final DfsClientConf conf = dfsClient.getConf();
     ArrayList<Future<ByteBuffer>> futures = new ArrayList<>();
@@ -1281,12 +1288,14 @@ public class DFSInputStream extends FSInputStream
     while (true) {
       // see HDFS-6591, this metric is used to verify/catch unnecessary loops
       hedgedReadOpsLoopNumForTesting++;
-      DNAddrPair chosenNode = null;
       // there is no request already executing.
       if (futures.isEmpty()) {
         // chooseDataNode is a commitment. If no node, we go to
-        // the NN to reget block locations. Only go here on first read.
-        chosenNode = chooseDataNode(block, ignored);
+        // the NN to reget block locations. The first read uses the node
+        // chosen by pread.
+        if (hedgedReadId > 0) {
+          chosenNode = chooseDataNode(block, ignored);
+        }
         // Latest block, if refreshed internally
         block = chosenNode.block;
         bb = ByteBuffer.allocate(len);
@@ -1489,12 +1498,18 @@ public class DFSInputStream extends FSInputStream
           blk.getBlockSize() - targetStart);
       long targetEnd = targetStart + bytesToRead - 1;
       try {
-        if (dfsClient.isHedgedReadsEnabled() && !blk.isStriped()) {
-          hedgedFetchBlockByteRange(blk, targetStart,
-              targetEnd, buffer, corruptedBlocks);
+        if (blk.isStriped()) {
+          // Striped blocks are handled by DFSStripedInputStream#fetchBlockByteRange,
+          // which selects its own DataNodes.
+          fetchBlockByteRange(blk, targetStart, targetEnd, buffer, corruptedBlocks);
         } else {
-          fetchBlockByteRange(blk, targetStart, targetEnd,
-              buffer, corruptedBlocks);
+          DNAddrPair chosenNode = chooseDataNode(blk, null);
+          if (dfsClient.isHedgedReadsEnabled() && shouldHedgeReadFrom(chosenNode)) {
+            hedgedFetchBlockByteRange(blk, targetStart, targetEnd, buffer, corruptedBlocks,
+                chosenNode);
+          } else {
+            fetchBlockByteRange(chosenNode, targetStart, targetEnd, buffer, corruptedBlocks);
+          }
         }
       } finally {
         // Check and report if any block replicas are corrupted.
@@ -2031,6 +2046,22 @@ public class DFSInputStream extends FSInputStream
     if (currentNode != null) {
       currentNode = blockSeekTo(pos);
     }
+  }
+
+  @VisibleForTesting
+  boolean shouldHedgeReadFrom(DNAddrPair addrPair) {
+    DfsClientConf conf = dfsClient.getConf();
+
+    if (!conf.isHedgedReadSkipShortCircuit()) {
+      return true;
+    }
+
+    if (!conf.getShortCircuitConf().isShortCircuitLocalReads()
+        || shortCircuitForbidden()) {
+      return true;
+    }
+
+    return !isResolveableAndLocal(addrPair.addr);
   }
 
   private boolean allBlocksLocal(LocatedBlocks blocks,

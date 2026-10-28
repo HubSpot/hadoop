@@ -4538,6 +4538,23 @@
 </property>
 
 <property>
+  <name>dfs.client.hedged.read.skip.short.circuit</name>
+  <value>false</value>
+  <description>
+    When hedged reads are enabled, read without hedging if the first-choice
+    replica is on the local host, dfs.client.read.shortcircuit is true, and
+    the file is not under construction. This avoids the per-read buffer
+    allocation and copy of the hedged read path for local reads. The check
+    uses configuration only: if short-circuit reads are configured but
+    unavailable at runtime (for example, native libhadoop is not loaded or
+    the domain socket is unusable), local reads still skip hedging and fall
+    back to a non-hedged TCP read. When hedging is skipped, neither a slow
+    local read nor the retries on other replicas after a failed local read
+    are hedged for that read.
+  </description>
+</property>
+
+<property>
   <name>dfs.client.hedged.read.threshold.millis</name>
   <value>500</value>
   <description>
