@@ -720,6 +720,108 @@ public class TestHubSpotStripedReadHedgeEndToEnd {
         + "hedgedReadOps only moved by " + hedges, hedges > 0);
   }
 
+  /**
+   * A DataNode that stalls before answering OP_READ_BLOCK holds the client in
+   * createBlockReader(), the way one that will not accept connections holds it
+   * in connect. A positional read creates its reader inside the read task, so
+   * the hedge must see that stall and read around it rather than wait it out.
+   * The first block group is full, so every data cell has to be read.
+   */
+  @Test
+  public void testPositionalHedgeEngagesWhenReaderCreationIsSlow()
+      throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    assertPreadHedgesAroundSlowReaderCreation(expected, firstBlockGroup());
+  }
+
+  /**
+   * The same stall in the partial last block group, where every data cell but
+   * the first lies past the end of the file and is ALLZERO. Only the first
+   * cell and the parity can be read, so the hedge must count the ALLZERO cells
+   * toward its reconstruction set or it can never retire the straggler.
+   */
+  @Test
+  public void testHedgeRetiresStragglerInPartialLastStripe() throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    LocatedBlocks blocks = fs.getClient().getLocatedBlocks(
+        filePath.toString(), 0, Long.MAX_VALUE);
+    LocatedStripedBlock last = (LocatedStripedBlock) blocks.get(
+        blocks.locatedBlockCount() - 1);
+    assertTrue("the last block group must be partial",
+        last.getBlockSize() < (long) blockSize * ecPolicy.getNumDataUnits());
+    assertPreadHedgesAroundSlowReaderCreation(expected, last);
+  }
+
+  /**
+   * Stalls the DataNode holding data cell 0 of {@code group}, then preads up to
+   * 64KB from that cell and asserts the hedge read around the stall.
+   */
+  private void assertPreadHedgesAroundSlowReaderCreation(byte[] expected,
+      LocatedStripedBlock group) throws Exception {
+    String slowUuid = locationOfBlockIndex(group, 0).getDatanodeUuid();
+    int offset = Math.toIntExact(group.getStartOffset());
+    AtomicInteger delayed = slowDownOneDataNode(slowUuid);
+    int len = Math.min(64 * 1024, expected.length - offset);
+
+    Configuration clientConf = new Configuration(conf);
+    clientConf.setLong(HEDGE_KEY, HEDGE_THRESHOLD_MS);
+    try (FileSystem client =
+        FileSystem.newInstance(cluster.getURI(0), clientConf)) {
+      byte[] actual = new byte[len];
+      long before = hedgedReadOps();
+      long start = Time.monotonicNow();
+      try (FSDataInputStream in = client.open(filePath)) {
+        in.readFully(offset, actual, 0, len);
+      }
+      long elapsed = Time.monotonicNow() - start;
+      long hedges = hedgedReadOps() - before;
+      LOG.info("creation-slow pread at {}: elapsed={}ms delayedReads={} "
+          + "hedges={}", offset, elapsed, delayed.get(), hedges);
+
+      assertArrayEquals("data must still be correct",
+          Arrays.copyOfRange(expected, offset, offset + len),
+          actual);
+      assertTrue("the slow DataNode should have been asked for data",
+          delayed.get() > 0);
+      assertTrue("hedge must engage when reader creation is slow, but "
+          + "hedgedReadOps only moved by " + hedges, hedges > 0);
+      assertTrue("the read must not wait out the " + SLOW_DN_DELAY_MS
+          + "ms stall, but took " + elapsed + "ms",
+          elapsed < SLOW_DN_DELAY_MS / 2);
+    }
+  }
+
+  /**
+   * Control: with hedging disabled, the same stall is waited out, as upstream
+   * does. This is what makes the bound above meaningful.
+   */
+  @Test
+  public void testDisabledHedgeWaitsOutSlowReaderCreation() throws Exception {
+    byte[] expected = writeFileSpanningStripes();
+    LocatedStripedBlock group = firstBlockGroup();
+    String slowUuid = locationOfBlockIndex(group, 0).getDatanodeUuid();
+    int offset = Math.toIntExact(group.getStartOffset());
+    slowDownOneDataNode(slowUuid);
+    int len = Math.min(64 * 1024, expected.length - offset);
+
+    Configuration clientConf = new Configuration(conf);
+    clientConf.setLong(HEDGE_KEY, 0);
+    try (FileSystem client =
+        FileSystem.newInstance(cluster.getURI(0), clientConf)) {
+      byte[] actual = new byte[len];
+      long start = Time.monotonicNow();
+      try (FSDataInputStream in = client.open(filePath)) {
+        in.readFully(offset, actual, 0, len);
+      }
+      long elapsed = Time.monotonicNow() - start;
+      assertArrayEquals(
+          Arrays.copyOfRange(expected, offset, offset + len),
+          actual);
+      assertTrue("with hedging off the stall must be waited out, but the read "
+          + "took only " + elapsed + "ms", elapsed >= SLOW_DN_DELAY_MS);
+    }
+  }
+
 
 
   /**
