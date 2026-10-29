@@ -50,6 +50,10 @@ import org.apache.hadoop.hdfs.server.namenode.TestINodeFile;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAContext;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAState;
 import org.apache.hadoop.net.NetworkTopology;
+import org.apache.hadoop.net.NodeBase;
+import org.apache.hadoop.test.Whitebox;
+import org.apache.hadoop.util.FakeTimer;
+import org.apache.hadoop.util.Time;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
@@ -496,6 +500,12 @@ public class TestErasureCodingExcessRedundancy {
    */
   @Test
   public void testStuckGroupIsQueuedAndConsolidates() {
+    BlockInfoStriped sblk = queuedConsolidationGroup();
+    assertEquals(9, consolidateAndVerify(sblk, "consolidate").size());
+    assertNull("nothing left to consolidate", planFor(sblk));
+  }
+
+  private BlockInfoStriped queuedConsolidationGroup() {
     List<Copy> copies = new ArrayList<>();
     copies.addAll(place("/rack2", 0, 1));
     copies.addAll(place("/rack1", 2, 3, 4, 5, 6, 7, 8));
@@ -508,8 +518,150 @@ public class TestErasureCodingExcessRedundancy {
     assertEquals(10, reclaimAndVerify(sblk, "relieved").size());
     assertTrue("a stuck group should be queued for consolidation",
         bm.isQueuedForEcConsolidation(sblk));
-    assertEquals(9, consolidateAndVerify(sblk, "consolidate").size());
-    assertNull("nothing left to consolidate", planFor(sblk));
+    return sblk;
+  }
+
+  private FakeTimer consolidationClock() {
+    FakeTimer timer = new FakeTimer();
+    Whitebox.setInternalState(bm, "ecConsolidationQueue",
+        new EcConsolidationQueue(timer));
+    return timer;
+  }
+
+  private BlockPlacementPolicyErasureCoding spyPlacementPolicy() {
+    BlockPlacementPolicyErasureCoding spy = Mockito.spy(policy);
+    Object policies = Whitebox.getInternalState(bm, "placementPolicies");
+    Whitebox.setInternalState(policies, "ecPolicy", spy);
+    return spy;
+  }
+
+  @Test
+  public void testTimedOutConsolidationIsRetried() {
+    FakeTimer timer = consolidationClock();
+    BlockInfoStriped sblk = queuedConsolidationGroup();
+    assertEquals(1, bm.computeBlockReconstructionWork(1));
+    assertFalse(bm.isQueuedForEcConsolidation(sblk));
+    assertEquals(1, bm.pendingReconstruction.getNumReplicas(sblk));
+
+    bm.pendingReconstruction.remove(sblk);
+    PendingReconstructionBlocks pending = Mockito.spy(bm.pendingReconstruction);
+    Mockito.doReturn(new BlockInfo[] {sblk}).when(pending).getTimedOutBlocks();
+    Whitebox.setInternalState(bm, "pendingReconstruction", pending);
+    bm.processPendingReconstructions();
+    assertTrue(bm.isQueuedForEcConsolidation(sblk));
+    assertFalse(bm.neededReconstruction.contains(sblk));
+    assertEquals(0, bm.computeBlockReconstructionWork(1));
+    timer.advance(EcConsolidationQueue.RETRY_DELAY_MS);
+    assertEquals(1, bm.computeBlockReconstructionWork(1));
+  }
+
+  @Test
+  public void testFailedTargetSelectionBacksOff() {
+    FakeTimer timer = consolidationClock();
+    BlockInfoStriped sblk = queuedConsolidationGroup();
+    BlockPlacementPolicyErasureCoding spy = spyPlacementPolicy();
+    String targetRack = planFor(sblk).getDomain();
+    for (DatanodeDescriptor dn : inService.get(targetRack)) {
+      setRemaining(dn, 0);
+    }
+    assertEquals(0, bm.computeBlockReconstructionWork(1));
+    assertTrue(bm.isQueuedForEcConsolidation(sblk));
+    assertEquals(0, bm.computeBlockReconstructionWork(1));
+    Mockito.verify(spy, Mockito.times(1)).chooseConsolidationTarget(
+        Mockito.anyString(), Mockito.anyList(), Mockito.anySet(),
+        Mockito.anyLong(), Mockito.any());
+    for (DatanodeDescriptor dn : inService.get(targetRack)) {
+      setRemaining(dn, CAPACITY);
+    }
+    timer.advance(EcConsolidationQueue.RETRY_DELAY_MS);
+    assertEquals(1, bm.computeBlockReconstructionWork(1));
+  }
+
+  @Test
+  public void testTransientValidationFailureIsRetried() {
+    FakeTimer timer = consolidationClock();
+    BlockInfoStriped sblk = queuedConsolidationGroup();
+    BlockPlacementPolicyErasureCoding spy = spyPlacementPolicy();
+    DatanodeStorageInfo storage =
+        liveCopies(sblk).get(0).node.getStorageInfos()[0];
+    Mockito.doAnswer(inv -> {
+      Object target = inv.callRealMethod();
+      storage.setBlockContentsStale(true);
+      return target;
+    }).when(spy).chooseConsolidationTarget(Mockito.anyString(),
+        Mockito.anyList(), Mockito.anySet(), Mockito.anyLong(), Mockito.any());
+    assertEquals(0, bm.computeBlockReconstructionWork(1));
+    assertTrue(bm.isQueuedForEcConsolidation(sblk));
+    assertEquals(0, bm.pendingReconstruction.getNumReplicas(sblk));
+    storage.setBlockContentsStale(false);
+    Mockito.doCallRealMethod().when(spy).chooseConsolidationTarget(
+        Mockito.anyString(), Mockito.anyList(), Mockito.anySet(),
+        Mockito.anyLong(), Mockito.any());
+    assertEquals(0, bm.computeBlockReconstructionWork(1));
+    timer.advance(EcConsolidationQueue.RETRY_DELAY_MS);
+    assertEquals(1, bm.computeBlockReconstructionWork(1));
+  }
+
+  @Test
+  public void testDeletedGroupIsRemovedFromConsolidationQueue() {
+    consolidationClock();
+    BlockInfoStriped sblk = queuedConsolidationGroup();
+    sblk.delete();
+    bm.removeBlock(sblk);
+    assertFalse(bm.isQueuedForEcConsolidation(sblk));
+    assertEquals(0, bm.computeBlockReconstructionWork(1));
+  }
+
+  @Test
+  public void testNewRackRescanIsBoundedAndPreservesReconstruction()
+      throws IOException {
+    newCluster(2, 16, 0);
+    List<BlockInfoStriped> stuck = new ArrayList<>();
+    for (int i = 0; i < 3; i++) {
+      List<Copy> copies = new ArrayList<>(place("/rack0", 0, 1, 2, 3, 4, 5));
+      copies.addAll(place("/rack1", 3, 4, 5, 6, 7, 8));
+      BlockInfoStriped sblk = newGroup(RS_6_3, 6, copies);
+      reclaim(sblk);
+      assertNull(planFor(sblk));
+      assertFalse(bm.isQueuedForEcConsolidation(sblk));
+      assertFalse(bm.neededReconstruction.contains(sblk));
+      stuck.add(sblk);
+    }
+    BlockInfoStriped underReplicated =
+        newGroup(RS_6_3, 6, place("/rack0", 0));
+    reclaim(underReplicated);
+    assertTrue(bm.neededReconstruction.contains(underReplicated));
+
+    inService.put("/rack2", new ArrayList<>());
+    inService.get("/rack2").add(addNode("/rack2"));
+    long refreshed = Time.monotonicNow() + 30_000L;
+    bm.rescanEcConsolidation(1, refreshed);
+    int discovered = 0;
+    for (BlockInfoStriped sblk : stuck) {
+      if (bm.neededReconstruction.contains(sblk)) {
+        discovered++;
+      }
+    }
+    assertTrue("one scan step must process at most one block", discovered <= 1);
+    assertTrue(bm.neededReconstruction.contains(underReplicated));
+    for (int i = 0; i < 4; i++) {
+      bm.rescanEcConsolidation(1, refreshed);
+    }
+    for (BlockInfoStriped sblk : stuck) {
+      assertTrue("new rack should rediscover " + sblk,
+          bm.neededReconstruction.contains(sblk));
+    }
+    assertTrue(bm.neededReconstruction.contains(underReplicated));
+  }
+
+  @Test
+  public void testConsolidationTargetSelectionDoesNotScanCluster() {
+    BlockInfoStriped sblk = queuedConsolidationGroup();
+    NetworkTopology spy = Mockito.spy(topology);
+    policy.clusterMap = spy;
+    assertEquals(1, bm.computeBlockReconstructionWork(1));
+    Mockito.verify(spy, Mockito.never()).getLeaves(NodeBase.ROOT);
+    assertEquals(1, bm.pendingReconstruction.getNumReplicas(sblk));
   }
 
   private BlockPlacementPolicyErasureCoding.Consolidation planFor(

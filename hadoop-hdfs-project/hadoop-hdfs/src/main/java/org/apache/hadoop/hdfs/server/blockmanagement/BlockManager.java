@@ -128,7 +128,6 @@ import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
-import org.apache.hadoop.hdfs.util.LightWeightLinkedSet;
 import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.net.NodeBase;
@@ -388,12 +387,14 @@ public class BlockManager implements BlockStatsMXBean {
    * redundancy monitor serves this queue only with capacity left over from
    * reconstruction. Guarded by the namesystem lock.
    */
-  private final LightWeightLinkedSet<BlockInfo> ecConsolidationQueue =
-      new LightWeightLinkedSet<>();
+  private final EcConsolidationQueue ecConsolidationQueue =
+      new EcConsolidationQueue();
   /** Failure domains with in-service datanodes, refreshed periodically. */
   private Set<String> inServiceDomains = null;
   private long inServiceDomainsRefreshedMs;
   private static final long IN_SERVICE_DOMAINS_REFRESH_MS = 30_000L;
+  private Iterator<BlockInfo> ecConsolidationScan;
+  private boolean ecConsolidationRescanRequested;
 
   /**
    * Maps a StorageID to the set of blocks that are "extra" for this
@@ -2165,6 +2166,7 @@ public class BlockManager implements BlockStatsMXBean {
     List<BlockInfo> consolidations = Collections.emptyList();
     namesystem.writeLock();
     try {
+      rescanEcConsolidation(blocksToProcess, Time.monotonicNow());
       boolean reset = false;
       if (replQueueResetToHeadThreshold > 0) {
         if (replQueueCallsSinceReset >= replQueueResetToHeadThreshold) {
@@ -2273,7 +2275,7 @@ public class BlockManager implements BlockStatsMXBean {
           rw.resetTargets();
           if (rw instanceof EcConsolidationWork && !rw.getBlock().isDeleted()) {
             // No target could be chosen this time; try again later.
-            ecConsolidationQueue.add(rw.getBlock());
+            retryEcConsolidation(rw.getBlock());
           }
           continue;
         }
@@ -2809,6 +2811,8 @@ public class BlockManager implements BlockStatsMXBean {
             neededReconstruction.add(bi, num.liveReplicas(),
                 num.readOnlyReplicas(), num.outOfServiceReplicas(),
                 getExpectedRedundancyNum(bi));
+          } else if (bi.isStriped()) {
+            retryEcConsolidation(bi);
           }
         }
       } finally {
@@ -4042,6 +4046,8 @@ public class BlockManager implements BlockStatsMXBean {
     stopReconstructionInitializer();
     neededReconstruction.clear();
     ecConsolidationQueue.clear();
+    ecConsolidationScan = null;
+    ecConsolidationRescanRequested = false;
     reconstructionQueuesInitializer = new Daemon() {
 
       @Override
@@ -4561,7 +4567,10 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   private Set<String> inServiceDomains() {
-    final long now = Time.monotonicNow();
+    return inServiceDomains(Time.monotonicNow());
+  }
+
+  private Set<String> inServiceDomains(long now) {
     if (inServiceDomains == null
         || now - inServiceDomainsRefreshedMs >= IN_SERVICE_DOMAINS_REFRESH_MS) {
       Set<String> domains = new HashSet<>();
@@ -4573,10 +4582,56 @@ public class BlockManager implements BlockStatsMXBean {
           domains.add(leaf.getNetworkLocation());
         }
       }
+      if (inServiceDomains != null
+          && !inServiceDomains.containsAll(domains)) {
+        ecConsolidationRescanRequested = true;
+      }
       inServiceDomains = domains;
       inServiceDomainsRefreshedMs = now;
     }
     return inServiceDomains;
+  }
+
+  /**
+   * Rediscover over-replicated groups after a failure domain becomes available,
+   * without resetting reconstruction queues or scanning all blocks in one tick.
+   */
+  @VisibleForTesting
+  void rescanEcConsolidation(int limit, long now) {
+    assert namesystem.hasWriteLock();
+    inServiceDomains(now);
+    if (ecConsolidationScan == null && ecConsolidationRescanRequested) {
+      ecConsolidationScan = blocksMap.getBlocks().iterator();
+      ecConsolidationRescanRequested = false;
+    }
+    if (ecConsolidationScan == null) {
+      return;
+    }
+    int remaining = Math.min(limit, numBlocksPerIteration);
+    while (remaining-- > 0 && ecConsolidationScan.hasNext()) {
+      BlockInfo block = ecConsolidationScan.next();
+      if (!block.isDeleted() && block.isStriped() && block.isComplete()
+          && block.numNodes()
+              > ((BlockInfoStriped) block).getRealTotalBlockNum()
+          && processMisReplicatedBlock(block) == MisReplicationResult.POSTPONE) {
+        postponeBlock(block);
+      }
+    }
+    if (!ecConsolidationScan.hasNext()) {
+      ecConsolidationScan = null;
+    }
+  }
+
+  /**
+   * Retry an over-replicated group without busy-looping on unavailable resources.
+   */
+  private void retryEcConsolidation(BlockInfo block) {
+    if (!block.isDeleted() && block.isStriped() && block.isComplete()
+        && block.numNodes() > ((BlockInfoStriped) block).getRealTotalBlockNum()
+        && !neededReconstruction.contains(block)
+        && pendingReconstruction.getNumReplicas(block) == 0) {
+      ecConsolidationQueue.retry(block);
+    }
   }
 
   /**
@@ -4592,6 +4647,7 @@ public class BlockManager implements BlockStatsMXBean {
     final BlockPlacementPolicyErasureCoding.Consolidation plan =
         planEcConsolidation(sblk);
     if (plan == null) {
+      retryEcConsolidation(sblk);
       return null;
     }
     final List<DatanodeDescriptor> containingNodes = new ArrayList<>();
@@ -4615,7 +4671,7 @@ public class BlockManager implements BlockStatsMXBean {
     if (source == null
         || !hasNodeOutside(plan.getDomain(), containingNodes)) {
       // Busy sources or a domain with no free node yet: try again later.
-      ecConsolidationQueue.add(sblk);
+      retryEcConsolidation(sblk);
       return null;
     }
     return new EcConsolidationWork(sblk, getBlockCollection(sblk), source,
@@ -4660,6 +4716,7 @@ public class BlockManager implements BlockStatsMXBean {
             targets[0].getDatanodeDescriptor().getNetworkLocation())
         || containsNode(block, targets[0].getDatanodeDescriptor())) {
       work.resetTargets();
+      retryEcConsolidation(block);
       return false;
     }
     work.addTaskToDatanode(null);
@@ -5406,6 +5463,7 @@ public class BlockManager implements BlockStatsMXBean {
           .toArray(new DatanodeStorageInfo[remove.getTargets().size()]));
     }
     neededReconstruction.remove(block, LowRedundancyBlocks.LEVEL);
+    ecConsolidationQueue.remove(block);
     postponedMisreplicatedBlocks.remove(block);
   }
 
@@ -5909,6 +5967,9 @@ public class BlockManager implements BlockStatsMXBean {
   public void clearQueues() {
     neededReconstruction.clear();
     ecConsolidationQueue.clear();
+    ecConsolidationScan = null;
+    ecConsolidationRescanRequested = false;
+    inServiceDomains = null;
     pendingReconstruction.clear();
     excessRedundancyMap.clear();
     invalidateBlocks.clear();

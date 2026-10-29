@@ -17,14 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.net.Node;
-import org.apache.hadoop.net.NodeBase;
 
 /**
  * Copies one internal block of a safely placed erasure-coded block group into
@@ -66,24 +64,12 @@ class EcConsolidationWork extends BlockReconstructionWork {
       setTargets(null);
       return;
     }
-    final BlockPlacementPolicyDefault policy =
-        (BlockPlacementPolicyDefault) blockplacement;
-    final Set<Node> excluded = new HashSet<>(excludedNodes);
-    for (Node leaf : policy.clusterMap.getLeaves(NodeBase.ROOT)) {
-      if (!domain.equals(leaf.getNetworkLocation())) {
-        excluded.add(leaf);
-      }
-    }
-    DatanodeStorageInfo[] chosen = blockplacement.chooseTarget(getSrcPath(),
-        1, getSrcNodes()[0], getLiveReplicaStorages(), false, excluded,
-        getBlockSize(), storagePolicySuite.getPolicy(getStoragePolicyID()),
-        null);
-    if (chosen != null && chosen.length > 0 && domain.equals(
-        chosen[0].getDatanodeDescriptor().getNetworkLocation())) {
-      setTargets(new DatanodeStorageInfo[] {chosen[0]});
-    } else {
-      setTargets(null);
-    }
+    final BlockPlacementPolicyErasureCoding policy =
+        (BlockPlacementPolicyErasureCoding) blockplacement;
+    DatanodeStorageInfo chosen = policy.chooseConsolidationTarget(domain,
+        getLiveReplicaStorages(), excludedNodes, getBlockSize(),
+        storagePolicySuite.getPolicy(getStoragePolicyID()));
+    setTargets(chosen == null ? null : new DatanodeStorageInfo[] {chosen});
   }
 
   @Override

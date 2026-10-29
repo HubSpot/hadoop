@@ -737,4 +737,53 @@ public class TestErasureCodingPlacementEndToEnd {
     assertReadable(file, data, "after consolidation");
     assertSurvivesEachRackOutage(file, data);
   }
+
+  @Test(timeout = 900000)
+  public void testNewRackRediscoversUnqueuedGroups() throws Exception {
+    String[] racks = {"/a", "/a", "/a", "/a", "/a", "/a",
+        "/b", "/b", "/b", "/b", "/b", "/b"};
+    HdfsConfiguration conf = newConf();
+    cluster = new MiniDFSCluster.Builder(conf).racks(racks)
+        .numDataNodes(racks.length).build();
+    cluster.waitActive();
+    fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(ecPolicy.getName());
+    fs.setErasureCodingPolicy(new Path("/"), ecPolicy.getName());
+
+    Path file = new Path("/new-rack");
+    byte[] data = StripedFileTestUtil.generateBytes(cellSize * dataBlocks * 2);
+    DFSTestUtil.writeFile(fs, file, data);
+    NoLossMonitor monitor = new NoLossMonitor(file);
+    monitor.start();
+    waitUntilSettled(file, "before adding a rack");
+    final int before;
+    cluster.getNamesystem().readLock();
+    try {
+      before = totalCopies(file);
+      for (BlockInfoStriped group : groups(file)) {
+        assertNull(planFor(group, racks()));
+        assertFalse(bm().isQueuedForEcConsolidation(group));
+      }
+    } finally {
+      cluster.getNamesystem().readUnlock();
+    }
+    monitor.arm();
+
+    cluster.startDataNodes(conf, 3, true, null,
+        new String[] {"/c", "/c", "/c"}, null, null, false);
+    cluster.waitActive();
+    waitUntilConsolidated(file, "after adding a new rack");
+    cluster.getNamesystem().readLock();
+    try {
+      assertTrue(totalCopies(file) < before);
+      assertEquals(groups(file).size()
+              * (dataBlocks + ecPolicy.getNumParityUnits()),
+          totalCopies(file));
+    } finally {
+      cluster.getNamesystem().readUnlock();
+    }
+    monitor.finish();
+    assertReadable(file, data, "after adding a new rack");
+    assertSurvivesEachRackOutage(file, data);
+  }
 }

@@ -20,6 +20,8 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,7 +31,10 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.net.Node;
 
 /**
  * A block placement policy for erasure-coded (striped) block groups.
@@ -72,6 +77,51 @@ public class BlockPlacementPolicyErasureCoding
    * counts as an extra copy that can relieve one over-concentrated domain.
    */
   static final byte PROPOSED_TARGET_INDEX = -1;
+
+  /**
+   * Choose a consolidation target within its planned domain, retaining storage,
+   * load, space, service-state and stale-node checks. The index-aware plan sets
+   * the domain's budget; protective duplicate copies need not be evenly spread.
+   */
+  DatanodeStorageInfo chooseConsolidationTarget(String domain,
+      List<DatanodeStorageInfo> chosen, Set<Node> excludedNodes, long blockSize,
+      BlockStoragePolicy storagePolicy) {
+    if (chosen.isEmpty()) {
+      return null;
+    }
+    // Consolidation planning requires a homogeneous storage type, including
+    // after the copy lands and the redundant originals are reclaimed.
+    StorageType storageType = chosen.get(0).getStorageType();
+    Set<Node> excluded = new HashSet<>(excludedNodes);
+    for (DatanodeStorageInfo storage : chosen) {
+      addToExcludedNodes(storage.getDatanodeDescriptor(), excluded);
+    }
+    boolean avoidStale = isAvoidingStaleDataNodesForWrite();
+    EnumSet<StorageType> unavailable = EnumSet.noneOf(StorageType.class);
+    while (true) {
+      List<StorageType> required = storagePolicy.chooseStorageTypes(
+          (short) (chosen.size() + 1),
+          DatanodeStorageInfo.toStorageTypes(chosen), unavailable, false);
+      if (!required.contains(storageType)) {
+        if (required.isEmpty() || !unavailable.addAll(required)) {
+          return null;
+        }
+        continue;
+      }
+      EnumMap<StorageType, Integer> types = new EnumMap<>(StorageType.class);
+      types.put(storageType, 1);
+      try {
+        return chooseRandom(domain, new HashSet<>(excluded), blockSize,
+            chosen.size() + 1, new ArrayList<>(chosen), avoidStale, types);
+      } catch (NotEnoughReplicasException e) {
+        if (avoidStale) {
+          avoidStale = false;
+        } else {
+          return null;
+        }
+      }
+    }
+  }
 
   /**
    * Verify the placement of an erasure-coded block group using the internal
