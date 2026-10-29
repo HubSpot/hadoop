@@ -122,6 +122,10 @@ public class BlockPlacementPolicyDefault extends BlockPlacementPolicy {
 
   protected BlockPlacementPolicyDefault() {
   }
+
+  protected boolean isAvoidingStaleDataNodesForWrite() {
+    return stats != null && stats.isAvoidingStaleDataNodesForWrite();
+  }
     
   @Override
   public void initialize(Configuration conf,  FSClusterStats stats,

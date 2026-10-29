@@ -263,6 +263,68 @@ public class TestErasureCodingPlacementEndToEnd {
     LOG.info("{} settled", phase);
   }
 
+  /** The consolidation the policy would plan for {@code g} now, if any. */
+  private BlockPlacementPolicyErasureCoding.Consolidation planFor(
+      BlockInfoStriped g, Set<String> racks) {
+    List<String> domains = new ArrayList<>();
+    List<Byte> indices = new ArrayList<>();
+    for (Map.Entry<Integer, List<String>> e : liveCopies(g).entrySet()) {
+      for (String rack : e.getValue()) {
+        domains.add(rack);
+        indices.add((byte) (int) e.getKey());
+      }
+    }
+    byte[] idx = new byte[indices.size()];
+    for (int i = 0; i < idx.length; i++) {
+      idx[i] = indices.get(i);
+    }
+    return policy().planConsolidation(domains.toArray(new String[0]), idx,
+        racks, g.getRealTotalBlockNum(), g.getParityBlockNum());
+  }
+
+  private int totalCopies(Path file) {
+    int total = 0;
+    for (BlockInfoStriped g : groups(file)) {
+      for (List<String> racks : liveCopies(g).values()) {
+        total += racks.size();
+      }
+    }
+    return total;
+  }
+
+  /** Settled, and with nothing left to consolidate. */
+  private void waitUntilConsolidated(Path file, String phase)
+      throws Exception {
+    final AtomicReference<String> last = new AtomicReference<>();
+    try {
+      GenericTestUtils.waitFor(() -> {
+        FSNamesystem fsn = cluster.getNamesystem();
+        fsn.readLock();
+        try {
+          Set<String> racks = racks();
+          for (BlockInfoStriped g : groups(file)) {
+            String reason = unsettledReason(g, racks);
+            if (reason == null && planFor(g, racks) != null) {
+              reason = "consolidation left: " + planFor(g, racks) + " in "
+                  + liveCopies(g);
+            }
+            if (reason != null) {
+              last.set(g + ": " + reason);
+              return false;
+            }
+          }
+          return true;
+        } finally {
+          fsn.readUnlock();
+        }
+      }, 500, 180000);
+    } catch (Exception e) {
+      throw new AssertionError(phase + " did not consolidate: " + last.get(),
+          e);
+    }
+    LOG.info("{} consolidated", phase);
+  }
+
   /**
    * Background check, sampled continuously: no internal block may ever be
    * left without a physical copy on a live node.
@@ -587,5 +649,141 @@ public class TestErasureCodingPlacementEndToEnd {
 
     assertSurvivesEachRackOutage(file, data);
     assertFalse(cluster.getNamesystem().isInSafeMode());
+  }
+
+  /**
+   * The production sequence that left groups over-replicated: groups land
+   * 1/6/2 across /a, /b, /c, with /b over its budget. Only /c can take relief
+   * copies, and it has room for just one moved internal block per group, so
+   * the other relief copies stay as protective duplicates shared by /b and /c.
+   * Once /a grows, consolidation must move those internal blocks into /a, one
+   * group at a time, until every group is at its minimum, without ever making
+   * any group unable to survive the loss of a rack.
+   */
+  @Test(timeout = 900000)
+  public void testStuckReliefCopiesAreConsolidated() throws Exception {
+    String[] racks = {"/a", "/b", "/b", "/b", "/b", "/b", "/b", "/b", "/c",
+        "/c"};
+    String[] hosts = new String[racks.length];
+    for (int i = 0; i < hosts.length; i++) {
+      hosts[i] = "host-" + racks[i].substring(1) + i;
+    }
+    HdfsConfiguration conf = newConf();
+    cluster = new MiniDFSCluster.Builder(conf).racks(racks).hosts(hosts)
+        .numDataNodes(racks.length).build();
+    cluster.waitActive();
+    fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(ecPolicy.getName());
+    fs.setErasureCodingPolicy(new Path("/"), ecPolicy.getName());
+
+    final Path file = new Path("/ec-file");
+    final byte[] data = StripedFileTestUtil.generateBytes(
+        cellSize * dataBlocks * 2 * 4);
+    DFSTestUtil.writeFile(fs, file, data);
+    NoLossMonitor monitor = new NoLossMonitor(file);
+    monitor.start();
+
+    // Only /c can take relief copies.
+    cluster.startDataNodes(conf, 3, true, null,
+        new String[] {"/c", "/c", "/c"},
+        new String[] {"host-c10", "host-c11", "host-c12"}, null, false);
+    cluster.waitActive();
+    waitUntilSettled(file, "after growing /c");
+
+    int stuck = 0;
+    final int stuckCopies;
+    cluster.getNamesystem().readLock();
+    try {
+      Set<String> currentRacks = racks();
+      for (BlockInfoStriped g : groups(file)) {
+        if (planFor(g, currentRacks) != null) {
+          stuck++;
+        }
+      }
+      stuckCopies = totalCopies(file);
+    } finally {
+      cluster.getNamesystem().readUnlock();
+    }
+    assertTrue("expected groups left over-replicated with nowhere to move",
+        stuck > 0);
+    assertReadable(file, data, "after relief into /c");
+
+    // From here on no group may become unable to survive a rack's loss.
+    monitor.arm();
+
+    // Give /a room for the moved internal blocks.
+    cluster.startDataNodes(conf, 3, true, null,
+        new String[] {"/a", "/a", "/a"},
+        new String[] {"host-a13", "host-a14", "host-a15"}, null, false);
+    cluster.waitActive();
+    waitUntilConsolidated(file, "after growing /a");
+
+    cluster.getNamesystem().readLock();
+    try {
+      assertTrue("consolidation should reduce the copies",
+          totalCopies(file) < stuckCopies);
+      for (BlockInfoStriped g : groups(file)) {
+        int copies = 0;
+        for (List<String> r : liveCopies(g).values()) {
+          copies += r.size();
+        }
+        assertEquals(g + " should be down to one copy per internal block: "
+            + liveCopies(g), g.getRealTotalBlockNum(), copies);
+      }
+    } finally {
+      cluster.getNamesystem().readUnlock();
+    }
+    monitor.finish();
+    assertReadable(file, data, "after consolidation");
+    assertSurvivesEachRackOutage(file, data);
+  }
+
+  @Test(timeout = 900000)
+  public void testNewRackRediscoversUnqueuedGroups() throws Exception {
+    String[] racks = {"/a", "/a", "/a", "/a", "/a", "/a",
+        "/b", "/b", "/b", "/b", "/b", "/b"};
+    HdfsConfiguration conf = newConf();
+    cluster = new MiniDFSCluster.Builder(conf).racks(racks)
+        .numDataNodes(racks.length).build();
+    cluster.waitActive();
+    fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(ecPolicy.getName());
+    fs.setErasureCodingPolicy(new Path("/"), ecPolicy.getName());
+
+    Path file = new Path("/new-rack");
+    byte[] data = StripedFileTestUtil.generateBytes(cellSize * dataBlocks * 2);
+    DFSTestUtil.writeFile(fs, file, data);
+    NoLossMonitor monitor = new NoLossMonitor(file);
+    monitor.start();
+    waitUntilSettled(file, "before adding a rack");
+    final int before;
+    cluster.getNamesystem().readLock();
+    try {
+      before = totalCopies(file);
+      for (BlockInfoStriped group : groups(file)) {
+        assertNull(planFor(group, racks()));
+        assertFalse(bm().isQueuedForEcConsolidation(group));
+      }
+    } finally {
+      cluster.getNamesystem().readUnlock();
+    }
+    monitor.arm();
+
+    cluster.startDataNodes(conf, 3, true, null,
+        new String[] {"/c", "/c", "/c"}, null, null, false);
+    cluster.waitActive();
+    waitUntilConsolidated(file, "after adding a new rack");
+    cluster.getNamesystem().readLock();
+    try {
+      assertTrue(totalCopies(file) < before);
+      assertEquals(groups(file).size()
+              * (dataBlocks + ecPolicy.getNumParityUnits()),
+          totalCopies(file));
+    } finally {
+      cluster.getNamesystem().readUnlock();
+    }
+    monitor.finish();
+    assertReadable(file, data, "after adding a new rack");
+    assertSurvivesEachRackOutage(file, data);
   }
 }
