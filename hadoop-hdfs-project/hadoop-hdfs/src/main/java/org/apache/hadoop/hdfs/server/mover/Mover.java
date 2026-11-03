@@ -216,8 +216,16 @@ public class Mover {
       for (int i = 0; i < indices.length; i++) {
         indices[i] = (byte) lsb.getBlockIndices()[i];
       }
-      db = new DBlockStriped(blk, indices, (short) ecPolicy.getNumDataUnits(),
-          ecPolicy.getCellSize());
+      DBlockStriped sdb = new DBlockStriped(blk, indices,
+          (short) ecPolicy.getNumDataUnits(), ecPolicy.getCellSize());
+      final DatanodeInfo[] dns = lsb.getLocations();
+      final String[] datanodeUuids = new String[dns.length];
+      for (int i = 0; i < dns.length; i++) {
+        datanodeUuids[i] = dns[i].getDatanodeUuid();
+      }
+      sdb.setPlacement(datanodeUuids, indices,
+          (short) ecPolicy.getNumParityUnits());
+      db = sdb;
     } else {
       db = new DBlock(blk);
     }
