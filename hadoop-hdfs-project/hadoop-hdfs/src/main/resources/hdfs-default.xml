@@ -4212,15 +4212,6 @@
 </property>
 
 <property>
-  <name>dfs.block.placement.ec.classname</name>
-  <value>org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyRackFaultTolerant</value>
-  <description>
-    Placement policy class for striped files.
-    Defaults to BlockPlacementPolicyRackFaultTolerant.class
-  </description>
-</property>
-
-<property>
   <name>dfs.block.replicator.classname</name>
   <value>org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyDefault</value>
   <description>

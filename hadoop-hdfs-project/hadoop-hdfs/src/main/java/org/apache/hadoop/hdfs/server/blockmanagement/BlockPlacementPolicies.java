@@ -28,7 +28,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 public class BlockPlacementPolicies{
 
   private final BlockPlacementPolicy replicationPolicy;
-  private final BlockPlacementPolicy ecPolicy;
+  private final BlockPlacementPolicyErasureCoding ecPolicy;
 
   public BlockPlacementPolicies(Configuration conf, FSClusterStats stats,
                                 NetworkTopology clusterMap,
@@ -39,12 +39,15 @@ public class BlockPlacementPolicies{
             BlockPlacementPolicy.class);
     replicationPolicy = ReflectionUtils.newInstance(replicatorClass, conf);
     replicationPolicy.initialize(conf, stats, clusterMap, host2datanodeMap);
-    final Class<? extends BlockPlacementPolicy> blockPlacementECClass =
-        conf.getClass(DFSConfigKeys.DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY,
-            DFSConfigKeys.DFS_BLOCK_PLACEMENT_EC_CLASSNAME_DEFAULT,
-            BlockPlacementPolicy.class);
-    ecPolicy = ReflectionUtils.newInstance(blockPlacementECClass, conf);
+    // Erasure-coded blocks are always placed by the EC-aware policy, which the
+    // block manager's reconstruction and excess handling rely on.
+    ecPolicy = new BlockPlacementPolicyErasureCoding();
     ecPolicy.initialize(conf, stats, clusterMap, host2datanodeMap);
+  }
+
+  /** The placement policy for erasure-coded (striped) blocks. */
+  public BlockPlacementPolicyErasureCoding getErasureCodingPolicy() {
+    return ecPolicy;
   }
 
   public BlockPlacementPolicy getPolicy(BlockType blockType){
