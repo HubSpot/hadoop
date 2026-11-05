@@ -20,7 +20,6 @@ package org.apache.hadoop.hdfs.server.namenode;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.ReconfigurationException;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -39,7 +38,6 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY;
 import static org.junit.Assert.assertEquals;
 
@@ -72,8 +70,6 @@ public class TestRefreshBlockPlacementPolicy {
     config = new Configuration();
     config.setClass(DFS_BLOCK_REPLICATOR_CLASSNAME_KEY,
         MockBlockPlacementPolicy.class, BlockPlacementPolicy.class);
-    config.setClass(DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY,
-        MockBlockPlacementPolicy.class, BlockPlacementPolicy.class);
     cluster = new MiniDFSCluster.Builder(config).numDataNodes(9).build();
     cluster.waitActive();
   }
@@ -90,18 +86,6 @@ public class TestRefreshBlockPlacementPolicy {
 
     verifyRefreshPolicy(dfs, file, () -> cluster.getNameNode()
         .reconfigurePropertyImpl(DFS_BLOCK_REPLICATOR_CLASSNAME_KEY, null));
-  }
-
-  @Test
-  public void testRefreshEcPolicy() throws Exception {
-    Path ecDir = new Path("/ec");
-    Path file = new Path("/ec/test-file");
-    DistributedFileSystem dfs = cluster.getFileSystem();
-    dfs.mkdir(ecDir, FsPermission.createImmutable((short)755));
-    dfs.setErasureCodingPolicy(ecDir, null);
-
-    verifyRefreshPolicy(dfs, file, () -> cluster.getNameNode()
-        .reconfigurePropertyImpl(DFS_BLOCK_PLACEMENT_EC_CLASSNAME_KEY, null));
   }
 
   @FunctionalInterface
