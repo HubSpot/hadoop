@@ -22,6 +22,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -324,5 +326,18 @@ public class TestBlockPlacementPolicyErasureCoding {
         locs.toArray(new DatanodeInfo[0]), idx, DATA_UNITS + PARITY_UNITS,
         PARITY_UNITS);
     assertTrue(status.isPlacementPolicySatisfied());
+  }
+
+  private static final int TOTAL = DATA_UNITS + PARITY_UNITS;
+
+  @Test
+  public void testDomainsWithoutSpareCapacity() {
+    Placement p = new Placement()
+        .on("/a", 0, 4)
+        .on("/b", 1, 2, 6, 7)
+        .on("/c", 3, 5, 8, 7);
+    assertEquals(new HashSet<>(Arrays.asList("/b", "/c")),
+        policy.domainsWithoutSpareCapacity(p.domains(), p.indices(), TOTAL,
+            PARITY_UNITS));
   }
 }
