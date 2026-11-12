@@ -1535,7 +1535,8 @@ public class Dispatcher implements Closeable {
         source.getDatanodeInfo(), target.getDatanodeInfo());
     if (Boolean.FALSE.equals(movable)) {
       LOG.debug("Not moving the internal block of {} on {} to {}: the group's"
-          + " erasure-coded placement would be less safe", block, source,
+          + " erasure-coded placement is incomplete or would be less safe",
+          block, source,
           target);
     }
     return movable;
