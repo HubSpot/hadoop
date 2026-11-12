@@ -242,7 +242,9 @@ public class TestPBHelper {
         datanodeUuids, storageIDs, storageTypes);
     if (isStriped) {
       blkLocs = new StripedBlockWithLocations(blkLocs, indices, dataBlkNum,
-          StripedFileTestUtil.getDefaultECPolicy().getCellSize());
+          StripedFileTestUtil.getDefaultECPolicy().getCellSize(),
+          (short) StripedFileTestUtil.getDefaultECPolicy()
+              .getNumParityUnits());
     }
     return blkLocs;
   }
@@ -251,9 +253,26 @@ public class TestPBHelper {
     assertEquals(locs1.getBlock(), locs2.getBlock());
     assertTrue(Arrays.equals(locs1.getStorageIDs(), locs2.getStorageIDs()));
     if (locs1 instanceof StripedBlockWithLocations) {
-      assertTrue(Arrays.equals(((StripedBlockWithLocations) locs1).getIndices(),
-          ((StripedBlockWithLocations) locs2).getIndices()));
+      StripedBlockWithLocations s1 = (StripedBlockWithLocations) locs1;
+      StripedBlockWithLocations s2 = (StripedBlockWithLocations) locs2;
+      assertTrue(Arrays.equals(s1.getIndices(), s2.getIndices()));
+      assertEquals(s1.getDataBlockNum(), s2.getDataBlockNum());
+      assertEquals(s1.getCellSize(), s2.getCellSize());
+      assertEquals(s1.getParityBlockNum(), s2.getParityBlockNum());
     }
+  }
+
+  /** A striped block from an older NameNode has no parity count. */
+  @Test
+  public void testConvertStripedBlockWithLocationsWithoutParity() {
+    StripedBlockWithLocations locs = new StripedBlockWithLocations(
+        getBlockWithLocations(1, false), new byte[]{0, 1, 2}, (short) 6,
+        StripedFileTestUtil.getDefaultECPolicy().getCellSize());
+    BlockWithLocationsProto proto = PBHelper.convert(locs);
+    assertFalse(proto.hasParityBlockNum());
+    StripedBlockWithLocations locs2 =
+        (StripedBlockWithLocations) PBHelper.convert(proto);
+    assertEquals(0, locs2.getParityBlockNum());
   }
 
   @Test
