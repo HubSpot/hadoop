@@ -18,7 +18,6 @@
 package org.apache.hadoop.hdfs.server.balancer;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,9 +29,8 @@ import org.junit.Before;
 import org.junit.Test;
 
 /**
- * Tests that {@link ErasureCodingMoveChecker} allows exactly the moves of
- * erasure-coded internal blocks whose source copy the NameNode will delete,
- * i.e. those that leave the group no less safe.
+ * Tests that {@link ErasureCodingMoveChecker} preserves the group's rack-loss
+ * safety and defers cross-domain moves until every expected index is live.
  */
 public class TestErasureCodingMoveChecker {
 
@@ -87,13 +85,18 @@ public class TestErasureCodingMoveChecker {
 
   private Boolean isMovable(DatanodeDescriptor source,
       DatanodeDescriptor target) {
+    return isMovable(source, target, TOTAL, PARITY);
+  }
+
+  private Boolean isMovable(DatanodeDescriptor source,
+      DatanodeDescriptor target, int total, int parity) {
     final String[] uuids = new String[nodes.size()];
     final byte[] idx = new byte[indices.size()];
     for (int i = 0; i < uuids.length; i++) {
       uuids[i] = nodes.get(i).getDatanodeUuid();
       idx[i] = indices.get(i);
     }
-    return checker.isMovable(uuids, idx, TOTAL, PARITY, source, target);
+    return checker.isMovable(uuids, idx, total, parity, source, target);
   }
 
   /**
@@ -190,6 +193,107 @@ public class TestErasureCodingMoveChecker {
   }
 
   @Test
+  public void testDefersCrossDomainMoveWithDecommissioningIndex() {
+    on("/a", 0, 1, 2);
+    on("/b", 3, 4);
+    on("/c", 5, 6, 7);
+    copy(newNode("/b"), 8).startDecommission();
+    final DatanodeDescriptor newInB = newNode("/b");
+    register(newInB);
+    assertEquals(false, isMovable(holderOf(0), newInB));
+  }
+
+  @Test
+  public void testDefersEvenSafeCrossDomainMoveWhileIncomplete() {
+    on("/a", 0, 1);
+    on("/b", 2, 3);
+    on("/c", 4, 5);
+    on("/d", 6, 7);
+    final DatanodeDescriptor inE = newNode("/e");
+    register(inE);
+    assertEquals(false, isMovable(holderOf(0), inE));
+  }
+
+  @Test
+  public void testAllowsSameDomainMoveWhileIncomplete() {
+    on("/a", 0, 1, 2);
+    on("/b", 3, 4);
+    on("/c", 5, 6, 7);
+    final DatanodeDescriptor newInA = newNode("/a");
+    register(newInA);
+    assertEquals(true, isMovable(holderOf(0), newInA));
+  }
+
+  @Test
+  public void testDuplicateCopiesDoNotHideMissingIndex() {
+    on("/a", 0, 1);
+    on("/b", 0, 2, 3);
+    on("/c", 4, 5);
+    on("/d", 6, 7);
+    final DatanodeDescriptor inE = newNode("/e");
+    register(inE);
+    assertEquals(false, isMovable(holderOf(0), inE));
+  }
+
+  @Test
+  public void testUnknownNodeDoesNotSupplyMissingIndex() {
+    on("/a", 0, 1);
+    on("/b", 2, 3);
+    on("/c", 4, 5);
+    on("/d", 6, 7, 8);
+    final DatanodeDescriptor inE = newNode("/e");
+    for (DatanodeDescriptor dn : nodes) {
+      if (dn != holderOf(8)) {
+        checker.addDatanode(dn);
+      }
+    }
+    checker.addDatanode(inE);
+    assertEquals(false, isMovable(holderOf(0), inE));
+  }
+
+  @Test
+  public void testAllowsCompleteShortenedGroup() {
+    on("/a", 0, 1);
+    on("/b", 6);
+    on("/c", 7, 8);
+    final DatanodeDescriptor inD = newNode("/d");
+    register(inD);
+    assertEquals(true, isMovable(holderOf(0), inD, 5, PARITY));
+  }
+
+  @Test
+  public void testDefersIncompleteShortenedGroup() {
+    on("/a", 0, 1);
+    on("/b", 6);
+    on("/c", 7);
+    final DatanodeDescriptor inD = newNode("/d");
+    register(inD);
+    assertEquals(false, isMovable(holderOf(0), inD, 5, PARITY));
+  }
+
+  @Test
+  public void testRejectsDecommissioningSource() {
+    on("/a", 0, 1, 2);
+    on("/b", 3, 4, 5);
+    on("/c", 6, 7, 8);
+    holderOf(0).startDecommission();
+    final DatanodeDescriptor inD = newNode("/d");
+    register(inD);
+    assertEquals(false, isMovable(holderOf(0), inD));
+  }
+
+  @Test
+  public void testRejectsDecommissioningTarget() {
+    on("/a", 0, 1, 2);
+    on("/b", 3, 4, 5);
+    on("/c", 6, 7, 8);
+    final DatanodeDescriptor inD = newNode("/d");
+    inD.startDecommission();
+    register(inD);
+    assertEquals(false, isMovable(holderOf(0), inD));
+  }
+
+  @Test
   public void testUnknownSource() {
     on("/a", 0, 1, 2);
     on("/b", 3, 4, 5);
@@ -197,6 +301,6 @@ public class TestErasureCodingMoveChecker {
     final DatanodeDescriptor stranger = newNode("/a");
     final DatanodeDescriptor newInB = newNode("/b");
     register(stranger, newInB);
-    assertNull(isMovable(stranger, newInB));
+    assertEquals(false, isMovable(stranger, newInB));
   }
 }

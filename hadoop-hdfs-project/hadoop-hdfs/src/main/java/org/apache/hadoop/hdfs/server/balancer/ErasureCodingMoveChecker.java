@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.balancer;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,7 +27,6 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyErasureCoding;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementStatusErasureCoding;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.net.NodeBase;
@@ -35,7 +35,9 @@ import org.apache.hadoop.net.NodeBase;
  * Decides whether moving an internal block of an erasure-coded block group is
  * one the NameNode will complete.
  * <p>
- * When the moved copy arrives, the NameNode deletes the source copy only if
+ * Cross-domain moves wait until every expected internal block has an
+ * in-service copy. When the moved copy arrives, the NameNode deletes the
+ * source copy only if
  * the group, judged by {@link BlockPlacementPolicyErasureCoding} on the copies
  * of in-service datanodes, is no less safe without it than with both copies.
  * Otherwise it keeps the source and may delete the new copy, undoing the move.
@@ -90,8 +92,7 @@ class ErasureCodingMoveChecker {
    * @param indices the internal block index of each copy
    * @param totalInternalBlocks the number of internal blocks of the group
    * @param parityBlockNum the parity count of the group's scheme
-   * @return whether the move is allowed, or null if {@code source} holds no
-   *         copy in the given placement and so the move cannot be judged
+   * @return whether the source is known and the move is allowed
    */
   Boolean isMovable(String[] datanodeUuids, byte[] indices,
       int totalInternalBlocks, int parityBlockNum, DatanodeInfo source,
@@ -103,14 +104,17 @@ class ErasureCodingMoveChecker {
         break;
       }
     }
-    if (sourcePos < 0) {
-      return null;
+    if (sourcePos < 0
+        || !inServiceNodes.containsKey(source.getDatanodeUuid())
+        || !inServiceNodes.containsKey(target.getDatanodeUuid())) {
+      return false;
     }
 
     final List<DatanodeInfo> withLocs = new ArrayList<>();
     final List<Byte> withIndices = new ArrayList<>();
     final List<DatanodeInfo> withoutLocs = new ArrayList<>();
     final List<Byte> withoutIndices = new ArrayList<>();
+    final BitSet available = new BitSet();
     for (int i = 0; i < datanodeUuids.length; i++) {
       final DatanodeInfo dn = inServiceNodes.get(datanodeUuids[i]);
       if (dn == null) {
@@ -118,31 +122,32 @@ class ErasureCodingMoveChecker {
       }
       withLocs.add(dn);
       withIndices.add(indices[i]);
+      available.set(indices[i]);
       if (i != sourcePos) {
         withoutLocs.add(dn);
         withoutIndices.add(indices[i]);
       }
+    }
+    if (!source.getNetworkLocation().equals(target.getNetworkLocation())
+        && available.cardinality() < totalInternalBlocks) {
+      return false;
     }
     withLocs.add(target);
     withIndices.add(indices[sourcePos]);
     withoutLocs.add(target);
     withoutIndices.add(indices[sourcePos]);
 
-    final BlockPlacementStatusErasureCoding withSource =
-        status(withLocs, withIndices, totalInternalBlocks, parityBlockNum);
-    final BlockPlacementStatusErasureCoding withoutSource =
-        status(withoutLocs, withoutIndices, totalInternalBlocks,
-            parityBlockNum);
-    return !withoutSource.isLessSafeThan(withSource);
+    return !policy.isPlacementLessSafe(
+        withoutLocs.toArray(new DatanodeInfo[0]), toIndices(withoutIndices),
+        withLocs.toArray(new DatanodeInfo[0]), toIndices(withIndices),
+        totalInternalBlocks, parityBlockNum);
   }
 
-  private BlockPlacementStatusErasureCoding status(List<DatanodeInfo> locs,
-      List<Byte> indices, int totalInternalBlocks, int parityBlockNum) {
+  private static byte[] toIndices(List<Byte> indices) {
     final byte[] indexArray = new byte[indices.size()];
     for (int i = 0; i < indexArray.length; i++) {
       indexArray[i] = indices.get(i);
     }
-    return policy.verifyBlockPlacement(locs.toArray(new DatanodeInfo[0]),
-        indexArray, totalInternalBlocks, parityBlockNum);
+    return indexArray;
   }
 }
