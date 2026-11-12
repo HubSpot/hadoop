@@ -329,7 +329,7 @@ public class BlockPlacementPolicyErasureCoding
   /**
    * Choose which redundant copies of one internal block to reclaim: the
    * largest set whose removal leaves the placement no less safe than it is
-   * now (see {@link BlockPlacementStatusErasureCoding#isLessSafeThan}), always
+   * now, including the parity budget consumed by missing indices, always
    * keeping at least one copy. Among equally large sets, the one keeping the
    * copies with the highest {@code keepPreference} is chosen.
    * <p>
@@ -355,8 +355,6 @@ public class BlockPlacementPolicyErasureCoding
     if (n > MAX_COPIES_SEARCHED) {
       return null;
     }
-    final BlockPlacementStatusErasureCoding baseline = verifyPlacement(
-        domains, indices, totalInternalBlocks, maxLossesPerDomain);
     final int all = (1 << n) - 1;
     for (int keep = 1; keep < n; keep++) {
       int bestMask = -1;
@@ -374,8 +372,8 @@ public class BlockPlacementPolicyErasureCoding
             score += keepPreference[b];
           }
         }
-        if (without(domains, indices, removed, totalInternalBlocks,
-            maxLossesPerDomain).isLessSafeThan(baseline)) {
+        if (removalWouldReduceSafety(domains, indices, removed,
+            totalInternalBlocks, maxLossesPerDomain)) {
           continue;
         }
         if (score > bestScore) {
@@ -397,7 +395,7 @@ public class BlockPlacementPolicyErasureCoding
     return new int[0];
   }
 
-  private BlockPlacementStatusErasureCoding without(String[] domains,
+  private boolean removalWouldReduceSafety(String[] domains,
       byte[] indices, Set<Integer> removed, int totalInternalBlocks,
       int maxLossesPerDomain) {
     String[] d = new String[domains.length - removed.size()];
@@ -408,7 +406,8 @@ public class BlockPlacementPolicyErasureCoding
         x[j++] = indices[i];
       }
     }
-    return verifyPlacement(d, x, totalInternalBlocks, maxLossesPerDomain);
+    return isPlacementLessSafe(d, x, domains, indices, totalInternalBlocks,
+        maxLossesPerDomain);
   }
 
   /**
