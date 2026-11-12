@@ -127,6 +127,13 @@ public class TestBlockPlacementPolicyErasureCoding {
           locs.toArray(new DatanodeInfo[0]), idx, totalInternalBlocks,
           maxLossesPerDomain);
     }
+
+    boolean lessSafeThan(Placement other, int totalInternalBlocks,
+        int maxLossesPerDomain) {
+      return policy.isPlacementLessSafe(locs.toArray(new DatanodeInfo[0]),
+          indices(), other.locs.toArray(new DatanodeInfo[0]), other.indices(),
+          totalInternalBlocks, maxLossesPerDomain);
+    }
   }
 
   private DatanodeInfo newNode(String rack) {
@@ -136,6 +143,78 @@ public class TestBlockPlacementPolicyErasureCoding {
     // failure domains; the EC verify short-circuits to "satisfied" otherwise.
     topology.add(dn);
     return dn;
+  }
+
+  @Test
+  public void testMissingIndexConsumesRackLossBudget() {
+    Placement withSource = new Placement().on("/a", 0, 1, 2)
+        .on("/b", 0, 3, 4).on("/c", 5, 6, 7);
+    Placement withoutSource = new Placement().on("/a", 1, 2)
+        .on("/b", 0, 3, 4).on("/c", 5, 6, 7);
+    assertTrue(withoutSource.lessSafeThan(withSource, 9, 3));
+    // The repair estimator remains separate from observed rack-loss safety.
+    assertEquals(0, withoutSource.verify(9, 3).getAdditionalReplicasRequired());
+  }
+
+  @Test
+  public void testTwoMissingIndicesConsumeRackLossBudget() {
+    Placement withSource = new Placement().on("/a", 0, 1)
+        .on("/b", 0, 2).on("/c", 3, 4).on("/d", 5, 6);
+    Placement withoutSource = new Placement().on("/a", 1)
+        .on("/b", 0, 2).on("/c", 3, 4).on("/d", 5, 6);
+    assertTrue(withoutSource.lessSafeThan(withSource, 9, 3));
+  }
+
+  @Test
+  public void testSameRackDuplicateCanBeRemovedWhileIncomplete() {
+    Placement withCopy = new Placement().on("/a", 0, 1, 2)
+        .on("/b", 3, 4, 4).on("/c", 5, 6, 7);
+    Placement withoutCopy = new Placement().on("/a", 0, 1, 2)
+        .on("/b", 3, 4).on("/c", 5, 6, 7);
+    assertFalse(withoutCopy.lessSafeThan(withCopy, 9, 3));
+  }
+
+  @Test
+  public void testCrossRackCopyCanBeRemovedWithinRemainingBudget() {
+    Placement withCopy = new Placement().on("/a", 0, 1)
+        .on("/b", 0, 2).on("/c", 3, 4).on("/d", 5, 6, 7);
+    Placement withoutCopy = new Placement().on("/a", 1)
+        .on("/b", 0, 2).on("/c", 3, 4).on("/d", 5, 6, 7);
+    assertFalse(withoutCopy.lessSafeThan(withCopy, 9, 3));
+  }
+
+  @Test
+  public void testShortenedGroupUsesDistinctNoncontiguousIndices() {
+    Placement withCopy = new Placement().on("/a", 0, 1)
+        .on("/b", 0, 6, 7);
+    Placement withoutCopy = new Placement().on("/a", 1)
+        .on("/b", 0, 6, 7);
+    assertTrue(withoutCopy.lessSafeThan(withCopy, 5, 3));
+  }
+
+  @Test
+  public void testLosingLastAvailableIndexIsLessSafe() {
+    Placement withCopy = new Placement().on("/a", 0)
+        .on("/b", 1, 2).on("/c", 3, 4);
+    Placement withoutCopy = new Placement().on("/b", 1, 2).on("/c", 3, 4);
+    assertTrue(withoutCopy.lessSafeThan(withCopy, 9, 3));
+  }
+
+  @Test
+  public void testLosingRequiredRackIsLessSafe() {
+    Placement withCopy = new Placement().on("/a", 0, 1, 2)
+        .on("/b", 0, 1, 2).on("/c", 0);
+    Placement withoutCopy = new Placement().on("/a", 0, 1, 2)
+        .on("/b", 0, 1, 2);
+    assertTrue(withoutCopy.lessSafeThan(withCopy, 3, 2));
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void testSafetyComparisonRejectsProposedTargets() {
+    Placement reported = new Placement().on("/a", 0).on("/b", 1);
+    Placement proposed = new Placement().on("/a", 0).on("/b", 1)
+        .relief("/c", 1);
+    proposed.lessSafeThan(reported, 9, 3);
   }
 
   @Test

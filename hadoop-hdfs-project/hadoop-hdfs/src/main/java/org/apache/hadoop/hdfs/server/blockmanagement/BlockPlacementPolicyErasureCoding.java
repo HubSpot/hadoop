@@ -35,6 +35,7 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.net.Node;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * A block placement policy for erasure-coded (striped) block groups.
@@ -210,6 +211,78 @@ public class BlockPlacementPolicyErasureCoding
       }
     }
     return soleCopies;
+  }
+
+  /**
+   * Whether an observed placement has lost protection relative to another:
+   * fewer distinct internal blocks are available, fewer required racks are
+   * occupied, or a rack loss leaves a larger deficit of surviving indices.
+   * Missing indices consume the parity budget just as indices lost with a
+   * rack do. Duplicate copies count only once towards availability.
+   *
+   * This comparison accepts only reported internal-block indices. Proposed
+   * targets are planning estimates and must not authorize deletion. Its
+   * per-rack deficits are not a repair-copy count: reconstructing one missing
+   * index can improve several racks at once.
+   */
+  public boolean isPlacementLessSafe(DatanodeInfo[] locs, byte[] indices,
+      DatanodeInfo[] otherLocs, byte[] otherIndices, int totalInternalBlocks,
+      int maxLossesPerDomain) {
+    String[] domains = new String[locs.length];
+    for (int i = 0; i < locs.length; i++) {
+      domains[i] = locs[i].getNetworkLocation();
+    }
+    String[] otherDomains = new String[otherLocs.length];
+    for (int i = 0; i < otherLocs.length; i++) {
+      otherDomains[i] = otherLocs[i].getNetworkLocation();
+    }
+    return isPlacementLessSafe(domains, indices, otherDomains, otherIndices,
+        totalInternalBlocks, maxLossesPerDomain);
+  }
+
+  boolean isPlacementLessSafe(String[] domains, byte[] indices,
+      String[] otherDomains, byte[] otherIndices, int totalInternalBlocks,
+      int maxLossesPerDomain) {
+    Map<Byte, Set<String>> current = observedDomainsPerIndex(domains, indices);
+    Map<Byte, Set<String>> other =
+        observedDomainsPerIndex(otherDomains, otherIndices);
+    int missing = totalInternalBlocks - current.size();
+    int otherMissing = totalInternalBlocks - other.size();
+    Preconditions.checkArgument(missing >= 0 && otherMissing >= 0,
+        "More distinct indices than expected internal blocks");
+    if (missing > otherMissing
+        || verifyRackSpread(domains, totalInternalBlocks)
+            .getAdditionalReplicasRequired()
+            > verifyRackSpread(otherDomains, totalInternalBlocks)
+                .getAdditionalReplicasRequired()) {
+      return true;
+    }
+    Map<String, Integer> sole = soleCopiesPerDomain(current);
+    Map<String, Integer> otherSole = soleCopiesPerDomain(other);
+    for (Map.Entry<String, Integer> entry : sole.entrySet()) {
+      int deficit = Math.max(0,
+          missing + entry.getValue() - maxLossesPerDomain);
+      int otherDeficit = Math.max(0,
+          otherMissing + otherSole.getOrDefault(entry.getKey(), 0)
+              - maxLossesPerDomain);
+      if (deficit > otherDeficit) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static Map<Byte, Set<String>> observedDomainsPerIndex(
+      String[] domains, byte[] indices) {
+    Preconditions.checkArgument(domains.length == indices.length,
+        "Each location must have an internal-block index");
+    Map<Byte, Set<String>> result = new HashMap<>();
+    for (int i = 0; i < indices.length; i++) {
+      Preconditions.checkArgument(indices[i] >= 0,
+          "Safety comparisons require reported internal-block indices");
+      result.computeIfAbsent(indices[i], k -> new HashSet<>()).add(domains[i]);
+    }
+    return result;
   }
 
   /** The failure domain of each of {@code storages}. */
