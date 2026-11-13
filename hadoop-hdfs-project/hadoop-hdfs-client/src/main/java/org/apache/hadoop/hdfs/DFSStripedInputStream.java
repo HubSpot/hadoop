@@ -27,6 +27,7 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException;
 import org.apache.hadoop.hdfs.DFSUtilClient.CorruptedBlocks;
+import org.apache.hadoop.hdfs.HubSpotStripedRefetch.MissingBlocksException;
 import org.apache.hadoop.hdfs.StripeReader.BlockReaderInfo;
 import org.apache.hadoop.hdfs.StripeReader.ReaderRetryPolicy;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
@@ -393,6 +394,8 @@ public class DFSStripedInputStream extends DFSInputStream {
 
     int len = strategy.getTargetLength();
     CorruptedBlocks corruptedBlocks = new CorruptedBlocks();
+    // HubSpot Edit: see HubSpotStripedRefetch.
+    int refetches = 0;
     if (pos < getFileLength()) {
       try {
         if (pos > blockEnd) {
@@ -410,7 +413,15 @@ public class DFSStripedInputStream extends DFSInputStream {
         int result = 0;
         while (result < realLen) {
           if (!curStripeRange.include(getOffsetInBlockGroup())) {
-            readOneStripe(corruptedBlocks);
+            // HubSpot Edit: see HubSpotStripedRefetch.
+            try {
+              readOneStripe(corruptedBlocks);
+            } catch (MissingBlocksException e) {
+              refetchAfterMissingBlocks(e, refetches++);
+              // Reopen the block group's readers on the new locations.
+              blockSeekTo(pos);
+              continue;
+            }
           }
           int ret = copyToTargetBuf(strategy, realLen - result);
           result += ret;
@@ -480,6 +491,41 @@ public class DFSStripedInputStream extends DFSInputStream {
    */
   @Override
   protected void fetchBlockByteRange(LocatedBlock block, long start,
+      long end, ByteBuffer buf, CorruptedBlocks corruptedBlocks)
+      throws IOException {
+    // HubSpot Edit: retry with fresh locations, as replicated preads do. Each
+    // attempt re-reads the block group from the cache, and buf only advances
+    // once a whole attempt succeeds. See HubSpotStripedRefetch.
+    for (int refetches = 0;; refetches++) {
+      try {
+        fetchBlockByteRangeOnce(block, start, end, buf, corruptedBlocks);
+        return;
+      } catch (MissingBlocksException e) {
+        refetchAfterMissingBlocks(e, refetches);
+      }
+    }
+  }
+
+  /**
+   * HubSpot Edit: see HubSpotStripedRefetch. Waits as a replicated read does,
+   * then clears the stream's dead nodes and re-fetches block locations, or
+   * rethrows {@code e} once this read has re-fetched too many times.
+   *
+   * <p>The count is local to each read rather than the stream's
+   * {@code failures} field, because every pread resets that field and preads
+   * on one stream run concurrently.
+   *
+   * @param refetches re-fetches this read has already done
+   */
+  private void refetchAfterMissingBlocks(MissingBlocksException e,
+      int refetches) throws IOException {
+    HubSpotStripedRefetch.waitBeforeRefetch(e, refetches,
+        dfsClient.getConf(), src);
+    getLocalDeadNodes().clear();
+    openInfo(true);
+  }
+
+  private void fetchBlockByteRangeOnce(LocatedBlock block, long start,
       long end, ByteBuffer buf, CorruptedBlocks corruptedBlocks)
       throws IOException {
     // Refresh the striped block group
