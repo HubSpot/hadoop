@@ -199,7 +199,10 @@ abstract class StripeReader {
   private void checkMissingBlocks() throws IOException {
     if (alignedStripe.missingChunksNum > parityBlkNum) {
       clearFutures();
-      throw new IOException(alignedStripe.missingChunksNum
+      // HubSpot Edit: a distinct type so the stream can re-fetch locations and
+      // retry, as replicated reads do. See HubSpotStripedRefetch.
+      throw new HubSpotStripedRefetch.MissingBlocksException(
+          alignedStripe.missingChunksNum, alignedStripe.missingChunksNum
           + " missing blocks, the stripe is: " + alignedStripe
           + "; locatedBlocks is: " + dfsStripedInputStream.getLocatedBlocks());
     }
