@@ -201,6 +201,9 @@ public class PBHelper {
       builder.setIndices(PBHelperClient.getByteString(sblk.getIndices()));
       builder.setDataBlockNum(sblk.getDataBlockNum());
       builder.setCellSize(sblk.getCellSize());
+      if (sblk.getParityBlockNum() > 0) {
+        builder.setParityBlockNum(sblk.getParityBlockNum());
+      }
     }
     return builder.build();
   }
@@ -216,7 +219,8 @@ public class PBHelper {
         PBHelperClient.convertStorageTypes(storageTypes, storageUuids.size()));
     if (b.hasIndices()) {
       blk = new StripedBlockWithLocations(blk, b.getIndices().toByteArray(),
-          (short) b.getDataBlockNum(), b.getCellSize());
+          (short) b.getDataBlockNum(), b.getCellSize(),
+          (short) b.getParityBlockNum());
     }
     return blk;
   }
