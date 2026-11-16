@@ -152,6 +152,7 @@ public class DfsClientConf {
 
   private final long hedgedReadThresholdMillis;
   private final int hedgedReadThreadpoolSize;
+  private final boolean hedgedReadSkipShortCircuit;
   private final List<Class<? extends ReplicaAccessorBuilder>>
       replicaAccessorBuilderClasses;
 
@@ -281,6 +282,9 @@ public class DfsClientConf {
     hedgedReadThreadpoolSize = conf.getInt(
         HdfsClientConfigKeys.HedgedRead.THREADPOOL_SIZE_KEY,
         HdfsClientConfigKeys.HedgedRead.THREADPOOL_SIZE_DEFAULT);
+    hedgedReadSkipShortCircuit = conf.getBoolean(
+        HedgedRead.SKIP_SHORT_CIRCUIT_KEY,
+        HedgedRead.SKIP_SHORT_CIRCUIT_DEFAULT);
 
     deadNodeDetectionEnabled =
         conf.getBoolean(DFS_CLIENT_DEAD_NODE_DETECTION_ENABLED_KEY,
@@ -683,6 +687,10 @@ public class DfsClientConf {
    */
   public int getHedgedReadThreadpoolSize() {
     return hedgedReadThreadpoolSize;
+  }
+
+  public boolean isHedgedReadSkipShortCircuit() {
+    return hedgedReadSkipShortCircuit;
   }
 
   /**
