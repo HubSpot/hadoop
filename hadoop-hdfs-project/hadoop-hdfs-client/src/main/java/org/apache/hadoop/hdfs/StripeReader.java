@@ -197,7 +197,10 @@ abstract class StripeReader {
   private void checkMissingBlocks() throws IOException {
     if (alignedStripe.missingChunksNum > parityBlkNum) {
       clearFutures();
-      throw new IOException(alignedStripe.missingChunksNum
+      // HubSpot Edit: a distinct type so the stream can re-fetch locations and
+      // retry, as replicated reads do. See HubSpotStripedRefetch.
+      throw new HubSpotStripedRefetch.MissingBlocksException(
+          alignedStripe.missingChunksNum, alignedStripe.missingChunksNum
           + " missing blocks, the stripe is: " + alignedStripe
           + "; locatedBlocks is: " + dfsStripedInputStream.getLocatedBlocks());
     }
@@ -220,7 +223,7 @@ abstract class StripeReader {
     checkMissingBlocks();
   }
 
-  void readParityChunks(int num) throws IOException {
+  private void readParityChunks(int num) throws IOException {
     for (int i = dataBlkNum, j = 0; i < dataBlkNum + parityBlkNum && j < num;
          i++) {
       if (alignedStripe.chunks[i] == null) {
@@ -352,7 +355,7 @@ abstract class StripeReader {
     };
   }
 
-  boolean readChunk(final LocatedBlock block, int chunkIndex)
+  private boolean readChunk(final LocatedBlock block, int chunkIndex)
       throws IOException {
     final StripingChunk chunk = alignedStripe.chunks[chunkIndex];
     if (block == null) {
@@ -504,7 +507,7 @@ abstract class StripeReader {
         readParityChunks(alignedStripe.missingChunksNum);
       }
     } catch (IOException e) {
-      dfsStripedInputStream.close();
+      dfsStripedInputStream.closeCurrentBlockReaders();
       throw e;
     }
     // TODO: for a full stripe we can start reading (dataBlkNum + 1) chunks
@@ -602,7 +605,7 @@ abstract class StripeReader {
       } catch (InterruptedException ie) {
         String err = "Read request interrupted";
         DFSClient.LOG.error(err, ie);
-        dfsStripedInputStream.close();
+        dfsStripedInputStream.closeCurrentBlockReaders();
         clearFutures();
         // Don't decode if read interrupted
         throw new InterruptedIOException(err);
