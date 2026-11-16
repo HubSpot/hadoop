@@ -223,6 +223,23 @@ public class TestErasureCodingExcessRedundancy {
     return set;
   }
 
+  private boolean lessSafe(BlockInfoStriped sblk, List<Copy> copies,
+      List<Copy> other) {
+    String[] domains = copies.stream().map(Copy::rack).toArray(String[]::new);
+    String[] otherDomains = other.stream().map(Copy::rack)
+        .toArray(String[]::new);
+    byte[] indices = new byte[copies.size()];
+    byte[] otherIndices = new byte[other.size()];
+    for (int i = 0; i < indices.length; i++) {
+      indices[i] = (byte) copies.get(i).index;
+    }
+    for (int i = 0; i < otherIndices.length; i++) {
+      otherIndices[i] = (byte) other.get(i).index;
+    }
+    return policy.isPlacementLessSafe(domains, indices, otherDomains,
+        otherIndices, sblk.getRealTotalBlockNum(), sblk.getParityBlockNum());
+  }
+
   /**
    * Independent of the placement policy: the number of distinct internal
    * blocks that survive the loss of {@code rack}.
@@ -276,6 +293,8 @@ public class TestErasureCodingExcessRedundancy {
     BlockPlacementStatusErasureCoding sAfter = status(sblk, after);
     assertFalse("reclaiming made placement less safe: " + ctx,
         sAfter.isLessSafeThan(sBefore));
+    assertFalse("reclaiming increased a rack-loss deficit: " + ctx,
+        lessSafe(sblk, after, before));
     if (sBefore.isPlacementPolicySatisfied()) {
       assertTrue("a satisfied group became unsatisfied: " + ctx,
           sAfter.isPlacementPolicySatisfied());
@@ -307,7 +326,7 @@ public class TestErasureCodingExcessRedundancy {
       List<Copy> without = new ArrayList<>(after);
       without.remove(i);
       assertTrue("a reclaimable copy " + after.get(i) + " was left: " + ctx,
-          status(sblk, without).isLessSafeThan(sAfter));
+          lessSafe(sblk, without, after));
     }
 
     // 5. Idempotent: a second pass reclaims nothing more.
@@ -336,6 +355,101 @@ public class TestErasureCodingExcessRedundancy {
   private static final ErasureCodingPolicy RS_6_3 =
       SystemErasureCodingPolicies.getByID(
           SystemErasureCodingPolicies.RS_6_3_POLICY_ID);
+
+  @Test
+  public void testHintCannotSpendParityNeededForDecommissioningIndex() {
+    List<Copy> copies = new ArrayList<>(place("/rack0", 0, 1, 2));
+    copies.addAll(place("/rack1", 3, 4));
+    copies.addAll(place("/rack2", 5, 6, 7));
+    Copy target = new Copy(inService.get("/rack1").get(12), 0);
+    copies.add(target);
+    copies.add(new Copy(decommissioning.get("/rack1").get(0), 8));
+    BlockInfoStriped sblk = newGroup(RS_6_3, 6, copies);
+    DatanodeDescriptor source = inService.get("/rack0").get(0);
+    setRemaining(source, CAPACITY / 100);
+
+    bm.processExtraRedundancyBlock(sblk, (short) 9, target.node,
+        new ReplicaDeleteHint(source, 0));
+    assertFalse("the hinted source protects rack1", bm.isExcess(source, sblk));
+    assertFalse("the new copy protects rack0", bm.isExcess(target.node, sblk));
+
+    DatanodeStorageInfo restored =
+        inService.get("/rack0").get(14).getStorageInfos()[0];
+    restored.addBlock(sblk, new Block(sblk.getBlockId() + 8, 0, 1));
+    bm.processExtraRedundancyBlock(sblk, (short) 9, target.node,
+        new ReplicaDeleteHint(source, 0));
+    assertTrue("restoring index 8 makes the move safe", bm.isExcess(source, sblk));
+    assertFalse(bm.isExcess(target.node, sblk));
+  }
+
+  @Test
+  public void testBatchReclamationKeepsProtectionWithTwoMissingIndices() {
+    List<Copy> copies = new ArrayList<>(place("/rack0", 0, 1));
+    copies.addAll(place("/rack1", 2));
+    copies.addAll(place("/rack2", 3, 4, 5, 6));
+    copies.add(new Copy(inService.get("/rack1").get(12), 0));
+    copies.add(new Copy(inService.get("/rack0").get(12), 0));
+    copies.add(new Copy(decommissioning.get("/rack1").get(0), 7));
+    copies.add(new Copy(decommissioning.get("/rack1").get(1), 8));
+    BlockInfoStriped sblk = newGroup(RS_6_3, 6, copies);
+
+    List<Copy> after = reclaimAndVerify(sblk, "two missing indices");
+    assertEquals(8, after.size());
+    assertEquals(7, indices(after).size());
+    assertEquals(6, survivorsOfRackLoss(after, "/rack1"));
+  }
+
+  @Test
+  public void testGreedyFallbackKeepsProtectionWithMissingIndex() {
+    List<Copy> copies = new ArrayList<>(place("/rack0", 0, 1, 2));
+    copies.addAll(place("/rack1", 3, 4));
+    copies.addAll(place("/rack2", 5, 6, 7));
+    for (int i = 3; i < 11; i++) {
+      copies.add(new Copy(inService.get("/rack0").get(i), 0));
+    }
+    copies.add(new Copy(inService.get("/rack1").get(12), 0));
+    copies.add(new Copy(decommissioning.get("/rack1").get(0), 8));
+    BlockInfoStriped sblk = newGroup(RS_6_3, 6, copies);
+
+    List<Copy> after = reclaimAndVerify(sblk, "greedy fallback");
+    assertEquals(9, after.size());
+    assertEquals(6, survivorsOfRackLoss(after, "/rack0"));
+    assertEquals(6, survivorsOfRackLoss(after, "/rack1"));
+  }
+
+  @Test
+  public void testPendingDeletionDoesNotRestoreMissingIndex() {
+    List<Copy> copies = new ArrayList<>(place("/rack0", 0, 1, 2));
+    copies.addAll(place("/rack1", 3, 4, 8));
+    copies.addAll(place("/rack2", 5, 6, 7));
+    Copy target = new Copy(inService.get("/rack1").get(12), 0);
+    copies.add(target);
+    BlockInfoStriped sblk = newGroup(RS_6_3, 6, copies);
+    ExcessRedundancyMap excess = (ExcessRedundancyMap)
+        Whitebox.getInternalState(bm, "excessRedundancyMap");
+    excess.add(inService.get("/rack1").get(8), sblk);
+    DatanodeDescriptor source = inService.get("/rack0").get(0);
+
+    bm.processExtraRedundancyBlock(sblk, (short) 9, target.node,
+        new ReplicaDeleteHint(source, 0));
+    assertFalse(bm.isExcess(source, sblk));
+    assertFalse(bm.isExcess(target.node, sblk));
+  }
+
+  @Test
+  public void testHintProtectsShortenedGroupWithMissingParityIndex() {
+    List<Copy> copies = new ArrayList<>(place("/rack0", 0, 1));
+    copies.addAll(place("/rack1", 6, 7));
+    Copy target = new Copy(inService.get("/rack1").get(12), 0);
+    copies.add(target);
+    copies.add(new Copy(decommissioning.get("/rack1").get(0), 8));
+    BlockInfoStriped sblk = newGroup(RS_6_3, 2, copies);
+    DatanodeDescriptor source = inService.get("/rack0").get(0);
+
+    bm.processExtraRedundancyBlock(sblk, (short) 5, target.node,
+        new ReplicaDeleteHint(source, 0));
+    assertFalse(bm.isExcess(source, sblk));
+  }
 
   /**
    * The production layout after decommission relief: /rack1 originally held
@@ -799,6 +913,11 @@ public class TestErasureCodingExcessRedundancy {
         }
         List<Copy> copies = new ArrayList<>();
         for (int index : groupIndices) {
+          List<DatanodeDescriptor> leaving = freeDecom.get(hot);
+          if (random.nextInt(8) == 0 && !leaving.isEmpty()) {
+            copies.add(new Copy(leaving.remove(leaving.size() - 1), index));
+            continue;
+          }
           int numCopies = 1 + (random.nextInt(3) == 0 ? random.nextInt(3) : 0);
           for (int c = 0; c < numCopies; c++) {
             String rack = (c == 0 && random.nextDouble() < hotBias) ? hot
