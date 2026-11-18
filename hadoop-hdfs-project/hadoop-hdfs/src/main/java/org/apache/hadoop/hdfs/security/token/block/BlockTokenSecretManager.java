@@ -76,7 +76,7 @@ public class BlockTokenSecretManager extends
   private long keyUpdateInterval;
   private volatile long tokenLifetime;
   private int serialNo;
-  private BlockKey currentKey;
+  private volatile BlockKey currentKey;
   private BlockKey nextKey;
   private final Map<Integer, BlockKey> allKeys;
   private String blockPoolId;
@@ -474,10 +474,7 @@ public class BlockTokenSecretManager extends
    */
   @Override
   protected byte[] createPassword(BlockTokenIdentifier identifier) {
-    BlockKey key = null;
-    synchronized (this) {
-      key = currentKey;
-    }
+    final BlockKey key = currentKey;
     if (key == null) {
       throw new IllegalStateException("currentKey hasn't been initialized.");
     }
@@ -526,10 +523,7 @@ public class BlockTokenSecretManager extends
   public DataEncryptionKey generateDataEncryptionKey() {
     byte[] nonce = new byte[8];
     nonceGenerator.nextBytes(nonce);
-    BlockKey key = null;
-    synchronized (this) {
-      key = currentKey;
-    }
+    final BlockKey key = currentKey;
     byte[] encryptionKey = createPassword(nonce, key.getKey());
     return new DataEncryptionKey(key.getKeyId(), blockPoolId, nonce,
         encryptionKey, timer.now() + tokenLifetime,
