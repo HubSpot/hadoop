@@ -4068,7 +4068,8 @@ public class BlockManager implements BlockStatsMXBean {
    * If there are any extras, call chooseExcessRedundancies() to
    * mark them in the excessRedundancyMap.
    */
-  private void processExtraRedundancyBlock(final BlockInfo block,
+  @VisibleForTesting
+  void processExtraRedundancyBlock(final BlockInfo block,
       final short replication, final DatanodeDescriptor addedNode,
       ReplicaDeleteHint delNodeHint) {
     assert namesystem.hasWriteLock();
@@ -4577,33 +4578,21 @@ public class BlockManager implements BlockStatsMXBean {
   /**
    * Whether removing {@code excluded} from the group's live storages would make
    * the erasure-coded placement less safe: the group would occupy fewer of the
-   * failure domains it should, or more internal blocks would be at risk of a
-   * single-domain loss. Only copies that actually protect the group are kept
+   * failure domains it should, or a rack loss would leave fewer of the indices
+   * needed for reconstruction. Missing in-service indices consume the parity
+   * budget. Only copies that actually protect the group are kept
    * this way; a redundant copy that does not improve safety is still reclaimed
    * so its capacity can be reused.
    */
   private boolean removalWouldReduceSafety(BlockInfoStriped sblk,
       Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
       BlockPlacementPolicyErasureCoding placementPolicy) {
-    BlockPlacementStatusErasureCoding withCopy =
-        ecPlacementStatus(sblk, nonExcess, null, placementPolicy);
-    BlockPlacementStatusErasureCoding withoutCopy =
-        ecPlacementStatus(sblk, nonExcess, excluded, placementPolicy);
-    return withoutCopy.isLessSafeThan(withCopy);
-  }
-
-  /**
-   * The EC placement status of the group backed by {@code nonExcess},
-   * optionally ignoring the {@code excluded} storage.
-   */
-  private BlockPlacementStatusErasureCoding ecPlacementStatus(
-      BlockInfoStriped sblk,
-      Collection<DatanodeStorageInfo> nonExcess, DatanodeStorageInfo excluded,
-      BlockPlacementPolicyErasureCoding placementPolicy) {
-    final List<DatanodeStorageInfo> storages = new ArrayList<>(nonExcess);
-    storages.remove(excluded);
-    return placementPolicy.verifyPlacement(domainsOf(storages),
-        indicesOf(sblk, storages), sblk.getRealTotalBlockNum(),
+    final List<DatanodeStorageInfo> withCopy = new ArrayList<>(nonExcess);
+    final List<DatanodeStorageInfo> withoutCopy = new ArrayList<>(withCopy);
+    withoutCopy.remove(excluded);
+    return placementPolicy.isPlacementLessSafe(domainsOf(withoutCopy),
+        indicesOf(sblk, withoutCopy), domainsOf(withCopy),
+        indicesOf(sblk, withCopy), sblk.getRealTotalBlockNum(),
         sblk.getParityBlockNum());
   }
 
